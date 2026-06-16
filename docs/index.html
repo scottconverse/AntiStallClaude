@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AntiStallClaude — stop AI coding agents from quitting early</title>
+<meta name="description" content="A harness-enforced Stop hook that blocks the announce-then-halt / silent drift-stop failure in autonomous coding agents. For Claude Code & Cowork. MIT." />
+<style>
+  :root{
+    --bg:#0d1117; --bg2:#161b22; --line:#30363d; --ink:#e6edf3; --ink2:#9da7b3;
+    --accent:#3fb950; --accent2:#58a6ff; --warn:#d29922; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px}
+  header{padding:72px 0 40px;text-align:center;border-bottom:1px solid var(--line)}
+  .tag{display:inline-block;font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+    color:var(--accent);background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.35);
+    border-radius:999px;padding:6px 12px;margin-bottom:20px}
+  h1{font-size:44px;line-height:1.1;margin:0 0 14px;letter-spacing:-.02em}
+  h1 .em{color:var(--accent)}
+  .sub{font-size:20px;color:var(--ink2);max-width:640px;margin:0 auto 28px}
+  .btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;font-weight:600;border-radius:8px;padding:11px 20px;border:1px solid var(--line)}
+  .btn.primary{background:var(--accent);color:#0d1117;border-color:var(--accent)}
+  .btn.ghost{background:var(--bg2);color:var(--ink)}
+  section{padding:48px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:26px;margin:0 0 18px;letter-spacing:-.01em}
+  p{color:var(--ink2)}
+  p strong,li strong{color:var(--ink)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:680px){.grid{grid-template-columns:1fr}h1{font-size:34px}}
+  .card{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .card h3{margin:0 0 8px;font-size:17px}
+  .card p{margin:0;font-size:14px}
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:16px;overflow:auto;
+    font:13px/1.7 var(--mono);color:var(--ink)}
+  code{font-family:var(--mono);color:var(--accent2)}
+  .flow{font:13px/1.6 var(--mono);color:var(--ink2);background:var(--bg2);border:1px solid var(--line);
+    border-radius:10px;padding:18px;white-space:pre;overflow:auto}
+  .pill{display:inline-block;font:600 11px/1 var(--mono);text-transform:uppercase;border-radius:999px;
+    padding:5px 10px;margin:2px}
+  .pill.done{color:var(--accent);background:rgba(63,185,80,.12)}
+  .pill.blocked{color:var(--warn);background:rgba(210,153,34,.12)}
+  .pill.question{color:var(--accent2);background:rgba(88,166,255,.12)}
+  footer{padding:40px 0 64px;text-align:center;color:var(--ink2);font-size:14px}
+  .lim{font-size:14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="tag">v0.1.0 · MIT · Claude Code &amp; Cowork</div>
+    <h1>Stop AI coding agents from <span class="em">quitting early</span>.</h1>
+    <p class="sub">AntiStallClaude is a harness-enforced <code>Stop</code> hook that blocks the
+      “announce-then-halt” drift — where an agent ends a turn with unfinished, authorized work.
+      Advice in a config file gets rationalized away. A hook can’t be.</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/scottconverse/AntiStallClaude">Get it on GitHub</a>
+      <a class="btn ghost" href="MANUAL.md">Read the manual</a>
+    </div>
+  </div>
+</header>
+
+<section><div class="wrap">
+  <h2>The problem</h2>
+  <p>Autonomous agents stall mid-task. With work still queued and nothing actually blocking them,
+    they write a tidy “here’s what I did, next I’ll…” summary — and stop. The tell is consistent:
+    <strong>the moment the agent composes that summary, it has already decided to quit.</strong></p>
+  <div class="grid" style="margin-top:18px">
+    <div class="card"><h3>A CLAUDE.md rule</h3><p>Advice. It lives in the model’s context and loses to
+      in-the-moment reasoning (“clean checkpoint”, “the turn is long”).</p></div>
+    <div class="card"><h3>A memory note</h3><p>Same advice, different file. Degrades over a long session.</p></div>
+    <div class="card"><h3>A system-prompt nudge</h3><p>Still text the model weighs — same failure class.</p></div>
+    <div class="card"><h3>A Stop hook ✓</h3><p>A separate process the harness runs every turn-end.
+      The model can’t reason its way past code that isn’t its to run.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>How it works</h2>
+  <p>While a <strong>sprint is armed</strong>, ending a turn is <strong>blocked</strong> unless the agent
+    writes a fresh, single-use <strong>stop-ticket</strong> declaring a legitimate reason:</p>
+  <p style="margin:10px 0 18px">
+    <span class="pill done">DONE — whole queue finished</span>
+    <span class="pill blocked">BLOCKED — human-only decision</span>
+    <span class="pill question">QUESTION — needs an answer</span>
+  </p>
+  <div class="flow">agent finishes a turn ─▶ harness runs antistall-gate
+        │
+   sprint armed? ──── no ──▶ allow (silent)
+        │ yes
+   fresh DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume, allow
+        │ no
+   block count ≥ cap? ── yes ──▶ allow + log (escape hatch)
+        │ no
+        ▼
+   { "decision": "block", "reason": "KEEP WORKING …" } ─▶ agent continues</div>
+  <p style="margin-top:16px">An <strong>anti-loop cap</strong> (default 6) guarantees a genuine dead-end
+    always escapes. When no sprint is armed, the gate is <strong>silent</strong> — normal chat is never gated.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Install</h2>
+  <pre>git clone https://github.com/scottconverse/AntiStallClaude.git
+python3 AntiStallClaude/install.py /path/to/your/project   # defaults to the current dir
+# then RESTART the Code tab — hooks load at session start</pre>
+  <p><strong>Cowork note:</strong> user-level <code>~/.claude</code> hooks don’t fire in Cowork — the installer
+    puts everything in the <strong>project</strong> <code>.claude/</code>, which does.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Use it</h2>
+  <pre>python3 .claude/hooks/antistall.py arm      "build the export pipeline"
+python3 .claude/hooks/antistall.py done     "shipped + tests green"   # disarms
+python3 .claude/hooks/antistall.py blocked  "need prod DB creds"      # stays armed
+python3 .claude/hooks/antistall.py question "which storage backend?"
+python3 .claude/hooks/antistall.py status</pre>
+</div></section>
+
+<section><div class="wrap">
+  <h2 class="lim">Honest about limits</h2>
+  <p class="lim">It is <strong>not</strong> unspoofable — an agent could write a false <code>DONE</code> ticket.
+    But that converts a silent drift into an explicit, logged, auditable claim, and default-deny removes the
+    lazy path. It enforces <strong>don’t stop early</strong>, not <strong>do good work</strong> — pair it with
+    tests and CI.</p>
+</div></section>
+
+<footer><div class="wrap">
+  AntiStallClaude · MIT · <a href="https://github.com/scottconverse/AntiStallClaude">github.com/scottconverse/AntiStallClaude</a><br/>
+  Extracted from a real fix: an agent that kept announce-then-halting, and a human who asked
+  “is there a hard hook we can put in place to stop this?”
+</div></footer>
+</body>
+</html>

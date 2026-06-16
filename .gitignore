@@ -1,0 +1,14 @@
+# AntiStallClaude runtime state (never commit a project's live gate state)
+.claude/sprint-gate.json
+.claude/sprint-stop-ticket.json
+.claude/.antistall-block-count
+*.bak-*
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db

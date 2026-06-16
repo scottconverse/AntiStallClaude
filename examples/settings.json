@@ -1,0 +1,26 @@
+{
+  "//": "Example PROJECT-LEVEL .claude/settings.json wiring for AntiStallClaude.",
+  "//cowork": "User-level ~/.claude hooks do NOT fire in Cowork — keep this in the PROJECT .claude/. Merge these hooks blocks into your existing settings.json; do not clobber other entries.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/antistall-gate.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/antistall-session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
