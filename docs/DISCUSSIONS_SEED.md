@@ -32,7 +32,7 @@ We tried the usual fixes. A `CLAUDE.md` rule is advice the model rationalizes
 past. A memory note degrades over a long session. They all live *inside* the
 model's reasoning — the exact thing that's failing.
 
-**AntiStallClaude 0.1.0** is the structural fix: a project-level `Stop` hook the
+**AntiStallClaude** is the structural fix: a project-level `Stop` hook the
 harness runs on every turn-end. While a sprint is armed, ending a turn is
 **blocked** unless the agent writes a single-use stop-ticket declaring `DONE`,
 `BLOCKED`, or `QUESTION`. It can never loop or trap a session — it honors the
