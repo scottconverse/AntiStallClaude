@@ -57,11 +57,12 @@ is blocked, and the agent is told to keep working.
 
 ### Safety: the anti-loop cap
 
-A gate that can never be satisfied would trap a session forever. So after
-`ANTISTALL_BLOCK_CAP` (default **6**) consecutive blocks, the gate **allows** the
-stop and logs loudly. A genuine dead-end always escapes; casual stalling still
-costs the agent six forced continuations. This is the escape hatch, not the
-happy path.
+A gate that can never be satisfied would trap a session forever. So once the
+consecutive-block counter reaches `ANTISTALL_BLOCK_CAP` (default **6**) — i.e. on
+the 6th turn-end attempt, after 5 forced continuations — the gate **allows** the
+stop and logs loudly (`n += 1; if n >= cap: allow`). A genuine dead-end always
+escapes; casual stalling still costs the agent `ANTISTALL_BLOCK_CAP − 1` forced
+continuations (five at the default). This is the escape hatch, not the happy path.
 
 ### Silent when idle
 
@@ -144,8 +145,9 @@ answers, you resume under the gate. After `done`, the sprint disarms.
 
 ## 5. Cowork notes (important)
 
-AntiStallClaude is built for Claude Code and Cowork. Two Cowork facts shaped the
-design:
+AntiStallClaude is built for Claude Code and Cowork only (see §8 on portability —
+the shipped hook speaks Claude Code's protocol and no other runtime is verified).
+Two Cowork facts shaped the design:
 
 1. **User-level (`~/.claude/`) hooks do NOT fire in Cowork's Code tab.** Only
    **project-level** hooks fire. Everything installs into the project's
@@ -158,8 +160,10 @@ design:
    always-loaded reminder, and/or run `antistall.py status` on resume to learn
    the live armed state.
 
-In plain Claude Code (CLI/desktop, non-Cowork), both hooks fire normally and the
-SessionStart reminder surfaces.
+In plain Claude Code (CLI/desktop, non-Cowork), both hooks fire and the
+SessionStart reminder typically surfaces — though hook/reminder behavior is
+version-dependent, so enforcement always rides on the **Stop** hook, never on the
+reminder. Confirm with the behavioral test in §7.
 
 ---
 
@@ -167,7 +171,7 @@ SessionStart reminder surfaces.
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `ANTISTALL_BLOCK_CAP` | `6` | consecutive blocks before the escape hatch fires |
+| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the escape hatch — the stop is allowed on the Nth turn-end attempt, after N−1 forced continuations (5 at the default) |
 | `ANTISTALL_TICKET_MAX_AGE_S` | `300` | a stop-ticket older than this is treated as stale |
 
 Set them in the project's `.claude/settings.json` `env` block or the
@@ -216,9 +220,14 @@ That is the `question` ticket: `antistall.py question "…"`. Or `blocked` for a
 hard external blocker. Both are legitimate, logged exits.
 
 **Does it work outside Claude Code?**
-Any agent runtime that supports a `Stop`-style hook returning a block decision
-can use `antistall-gate.py`. The wiring (`settings.json`) is Claude Code's
-format; adapt it to your runtime's hook config.
+Not as shipped, and nothing else is verified. `antistall-gate.py` and the
+`settings.json` wiring speak **Claude Code's** specific Stop-hook contract
+(`{"decision":"block"}` on stdout, project-level `.claude/settings.json`), so it
+runs as-is only on Claude Code and Cowork. The *pattern* — a turn-end hook that
+can block — could port to another runtime, but you would have to rewrite the
+script to that runtime's hook I/O. **No other runtime has been confirmed to
+support a compatible block-on-stop hook.** In particular, Codex, Gemini CLI, and
+GitHub Copilot CLI are **not** verified — do not assume drop-in support.
 
 ---
 

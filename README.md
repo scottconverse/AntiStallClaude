@@ -2,7 +2,16 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.1.0 · MIT licensed · for [Claude Code](https://claude.com/claude-code) / Cowork (and any agent runtime with `Stop` hooks)
+Version 0.1.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+
+> **Runtime support — read this honestly.** The gate is built against **Claude
+> Code's** `Stop`-hook contract: it returns `{"decision":"block"}` on stdout and
+> wires in via a project-level `.claude/settings.json`. It runs **as-is on Claude
+> Code and Cowork** (Cowork is Claude Code in desktop-agent mode). The *idea* — a
+> block-capable turn-end hook — could port to another agent runtime, but the
+> shipped script speaks Claude Code's protocol, so you would have to adapt it.
+> **No other runtime (Codex, Gemini CLI, GitHub Copilot CLI, …) has been verified
+> to support a compatible block-on-stop hook.** Don't assume drop-in portability.
 
 ---
 
@@ -39,8 +48,9 @@ declaring a legitimate reason:
 - **`BLOCKED`** — a decision only the human can make halts *all* remaining work.
 - **`QUESTION`** — the agent asked the human something and needs the answer.
 
-An **anti-loop cap** (default 6 consecutive blocks) guarantees a genuine
-dead-end can always escape — the gate can never trap a session forever. When no
+An **anti-loop cap** (default 6 — the gate blocks 5 turn-ends, then lets the 6th
+through) guarantees a genuine dead-end can always escape — the gate can never
+trap a session forever. When no
 sprint is armed, the gate is **silent**: normal conversational turns are never
 gated.
 
@@ -162,7 +172,7 @@ python3 tests/test_gate.py
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `ANTISTALL_BLOCK_CAP` | `6` | consecutive blocks before the escape hatch |
+| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the escape hatch (allows the Nth turn-end after N−1 forced continuations) |
 | `ANTISTALL_TICKET_MAX_AGE_S` | `300` | a stop-ticket older than this is stale |
 
 ## Removal

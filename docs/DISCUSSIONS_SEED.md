@@ -28,7 +28,7 @@ mid-build, and a human who finally asked, *"is there a hard hook we can put in
 place to stop this?"* There is.
 
 - Install + docs: see the README.
-- For Claude Code & Cowork (and any runtime with `Stop` hooks). MIT.
+- Built for Claude Code & Cowork. The shipped hook speaks Claude Code's protocol; no other runtime (Codex, Gemini CLI, Copilot CLI) is verified. MIT.
 
 What stalls *your* agent most? Drop a reply.
 
