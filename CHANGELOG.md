@@ -4,6 +4,27 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.1.1] — 2026-06-17
+
+### Fixed
+- **Critical: the `Stop` hook could loop forever and burn tokens without limit.**
+  `antistall-gate.py` never checked `stop_hook_active`, so when it blocked a stop
+  the agent continued and immediately tried to stop again — and the hook blocked
+  again. The only brake was the consecutive-block counter, which failed **closed**:
+  any read error reset it to `0`, so it never reached the cap. Two agents sharing
+  one project `.claude/` (or any mid-write race on `.antistall-block-count`) pinned
+  the counter near 1 and the gate looped indefinitely, leaving the session pinned
+  "running". Two independent fixes:
+  - **Honor `stop_hook_active`** (primary, race-proof): always allow a stop that is
+    itself the product of a prior block. Caps the gate at one nudge per
+    continuation chain — depends on no shared file.
+  - **Fail-open anti-loop counter** (secondary): any unreadable / corrupt /
+    unwritable counter now **allows** the stop instead of blocking again.
+  Regression tests added to `tests/test_gate.py` (E: `stop_hook_active` allow,
+  F: corrupt-counter fail-open, G: bounded-loop ≤1 block). Docs corrected (README,
+  MANUAL §"Safety") — the anti-loop cap is no longer described as the sole
+  guarantee. **Anyone running an earlier `antistall-gate.py` should update.**
+
 ## [0.1.0] — 2026-06-16
 
 Initial public release.

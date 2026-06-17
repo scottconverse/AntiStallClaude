@@ -95,12 +95,51 @@ def main() -> int:
         if "anti-loop cap" not in last_err:
             failures.append(f"D (anti-loop escape at cap): err={last_err!r}")
 
+        # E — LOOP GUARD: stop_hook_active=true ALWAYS allows, even armed + no
+        # ticket + a stuck non-zero counter (the exact state that looped before).
+        flag.write_text(json.dumps({"active": True, "note": "test"}), encoding="utf-8")
+        count.write_text("1", encoding="utf-8")
+        rc, out, err = run_gate(proj, payload=json.dumps({"stop_hook_active": True}))
+        if not (rc == 0 and out.strip() == "" and "loop guard" in err.lower()):
+            failures.append(f"E (stop_hook_active -> allow): rc={rc} out={out!r} err={err!r}")
+
+        # F — FAIL OPEN: a corrupt counter must allow the stop, never block.
+        count.write_text("not-a-number", encoding="utf-8")
+        rc, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": False}))
+        if not (rc == 0 and out.strip() == ""):
+            failures.append(f"F (corrupt counter -> fail open allow): rc={rc} out={out!r}")
+
+        # G — BOUNDEDNESS: simulate the real harness auto-continue loop. The first
+        # stop is blocked; the harness then continues *because of* that block, so
+        # the next Stop carries stop_hook_active=true and MUST be allowed. The loop
+        # therefore terminates in at most one block. If this ever blocks twice, the
+        # token-burning loop has regressed.
+        if count.exists():
+            count.unlink()
+        if ticket.exists():
+            ticket.unlink()
+        blocks = 0
+        sha = False
+        for _ in range(50):
+            _, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": sha}))
+            if '"decision": "block"' in out:
+                blocks += 1
+                sha = True  # harness now continues as a result of the block
+            else:
+                break
+        if blocks > 1:
+            failures.append(f"G (autonomous loop must terminate <=1 block): blocked {blocks}x")
+
     if failures:
         print("FAIL:")
         for f in failures:
             print("  -", f)
         return 1
-    print("OK: anti-stall gate — silent / block / allow+consume / stale-ignored / BLOCKED / QUESTION / anti-loop all pass")
+    print(
+        "OK: anti-stall gate — silent / block / allow+consume / stale-ignored / "
+        "BLOCKED / QUESTION / anti-loop cap / stop_hook_active loop-guard / "
+        "fail-open counter / bounded-loop all pass"
+    )
     return 0
 
 

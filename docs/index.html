@@ -93,14 +93,19 @@
         │
    sprint armed? ──── no ──▶ allow (silent)
         │ yes
+   stop_hook_active? ── yes ──▶ allow (loop guard — never block a continuation a block caused)
+        │ no
    fresh DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume, allow
         │ no
-   block count ≥ cap? ── yes ──▶ allow + log (escape hatch)
+   block count ≥ cap, or counter unreadable/corrupt? ── yes ──▶ allow (fail-open escape)
         │ no
         ▼
    { "decision": "block", "reason": "KEEP WORKING …" } ─▶ agent continues</div>
-  <p style="margin-top:16px">An <strong>anti-loop cap</strong> (default 6 — blocks 5 turn-ends, then lets the 6th through) guarantees a genuine dead-end
-    always escapes. When no sprint is armed, the gate is <strong>silent</strong> — normal chat is never gated.</p>
+  <p style="margin-top:16px"><strong>The gate can never loop or trap a session.</strong> It honors
+    <code>stop_hook_active</code> — always allowing a stop that a prior block caused, so it nudges a drift-stop
+    at most once per continuation chain. A fail-open anti-loop cap (default 6) is a second, independent guard:
+    any unreadable or corrupt counter allows the stop rather than blocking again. When no sprint is armed, the
+    gate is <strong>silent</strong> — normal chat is never gated.</p>
 </div></section>
 
 <section><div class="wrap">

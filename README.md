@@ -48,11 +48,24 @@ declaring a legitimate reason:
 - **`BLOCKED`** — a decision only the human can make halts *all* remaining work.
 - **`QUESTION`** — the agent asked the human something and needs the answer.
 
-An **anti-loop cap** (default 6 — the gate blocks 5 turn-ends, then lets the 6th
-through) guarantees a genuine dead-end can always escape — the gate can never
-trap a session forever. When no
-sprint is armed, the gate is **silent**: normal conversational turns are never
-gated.
+**The gate can never loop or trap a session.** A blocking `Stop` hook that
+re-blocks while the agent is *already* continuing because of a prior block would
+run forever and burn tokens without limit — the single most dangerous failure
+mode of this kind of hook. Two independent guards prevent it:
+
+1. **`stop_hook_active` (primary).** The harness sets this flag on a `Stop` that
+   is itself the result of a previous block. When it's set, the gate **always**
+   allows the stop. So the gate nudges a drift-stop at most **once per
+   continuation chain** — it stops the drift, it can't loop on it. This depends
+   on no shared file, so it's immune to races.
+2. **Fail-open anti-loop cap (secondary).** For any runtime that doesn't surface
+   `stop_hook_active`, a consecutive-block counter (default 6) still caps the
+   loop — and *any* uncertainty about that counter (unreadable, corrupt, or two
+   agents racing on the file) **allows** the stop rather than blocking again. A
+   loop guard must never be able to loop itself.
+
+When no sprint is armed, the gate is **silent**: normal conversational turns are
+never gated.
 
 This inverts the default. Instead of *"stopping is allowed unless I remember not
 to,"* it becomes *"stopping is blocked unless I take a deliberate, logged action
@@ -68,11 +81,15 @@ agent finishes a turn ──▶ harness runs .claude/hooks/antistall-gate.sh
                                    │
                                   yes
                                    │
+            stop_hook_active? ─────┼─── yes ──▶ allow stop  (LOOP GUARD — never block a
+                                   │            continuation that a prior block caused)
+                                   no
+                                   │
                 fresh DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume it, allow stop
                                    │
                                    no
                                    │
-                   block count ≥ cap? ── yes ──▶ allow stop + log loudly (escape hatch)
+       block count ≥ cap, OR counter unreadable/corrupt? ── yes ──▶ allow stop  (fail-open escape)
                                    │
                                    no
                                    ▼

@@ -55,14 +55,31 @@ Each is recorded as a **single-use stop-ticket**. The hook consumes it and
 allows exactly one turn-end. Anything else — including a tidy progress summary —
 is blocked, and the agent is told to keep working.
 
-### Safety: the anti-loop cap
+### Safety: why the gate can never loop or trap a session
 
-A gate that can never be satisfied would trap a session forever. So once the
-consecutive-block counter reaches `ANTISTALL_BLOCK_CAP` (default **6**) — i.e. on
-the 6th turn-end attempt, after 5 forced continuations — the gate **allows** the
-stop and logs loudly (`n += 1; if n >= cap: allow`). A genuine dead-end always
-escapes; casual stalling still costs the agent `ANTISTALL_BLOCK_CAP − 1` forced
-continuations (five at the default). This is the escape hatch, not the happy path.
+A blocking `Stop` hook has one catastrophic failure mode: if it re-blocks while
+the agent is *already* continuing because of a prior block, it creates an endless
+`block → continue → block` loop — the session never goes idle and tokens burn
+without limit. Two **independent** guards prevent that here:
+
+1. **`stop_hook_active` (primary).** Claude Code sets this field on a `Stop` that
+   was itself produced by a previous Stop-hook block. When it's set, the gate
+   **always** allows the stop. The gate therefore nudges a drift-stop at most
+   **once per continuation chain** — it stops the drift but cannot loop on it.
+   This guarantee depends on no shared file, so it is immune to races between
+   two agents sharing the same project `.claude/`.
+2. **Fail-open anti-loop cap (secondary).** For a runtime that does not surface
+   `stop_hook_active`, the consecutive-block counter still caps the loop: once it
+   reaches `ANTISTALL_BLOCK_CAP` (default **6**) the gate allows the stop and logs
+   loudly. Crucially, **any** uncertainty about the counter — unreadable, corrupt,
+   or a mid-write race — also **allows** the stop. A loop guard that can itself
+   loop is worse than no guard, so every anomaly fails *open*.
+
+> ⚠️ Earlier releases relied on the cap alone, and the counter failed *closed*
+> (a read error reset it to 0, so it never reached the cap). Two agents sharing
+> the counter file — or any mid-write race — could pin it near 1 and loop
+> forever. The `stop_hook_active` guard plus fail-open counter close that hole.
+> If you carried an older copy of `antistall-gate.py`, replace it.
 
 ### Silent when idle
 
