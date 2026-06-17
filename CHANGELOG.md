@@ -8,6 +8,16 @@ All notable changes to AntiStallClaude are documented here. Format follows
 
 Initial public release.
 
+### Fixed
+- Corrected cross-runtime portability claim: the shipped hook speaks Claude Code's
+  Stop-hook protocol and is verified only on Claude Code and Cowork; Codex, Gemini
+  CLI, and GitHub Copilot CLI are explicitly not verified (README, MANUAL §8,
+  DISCUSSIONS_SEED, release notes, Discussion #1).
+- Fixed anti-loop off-by-one in docs: `ANTISTALL_BLOCK_CAP=6` blocks `cap−1 = 5`
+  turn-ends and allows the 6th — corrected in README, MANUAL §2 and §6, and the
+  release notes ("six forced continuations" → "five forced continuations at the
+  default").
+
 ### Added
 - **Anti-stall `Stop` hook** (`hooks/antistall-gate.py` + `.sh`) — blocks ending
   a turn while a sprint is armed unless a fresh `DONE`/`BLOCKED`/`QUESTION`

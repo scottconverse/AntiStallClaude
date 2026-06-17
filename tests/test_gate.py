@@ -62,11 +62,29 @@ def main() -> int:
         if not (rc == 0 and out.strip() == "" and not ticket.exists() and "ALLOWED" in err):
             failures.append(f"C (DONE ticket allow+consume): rc={rc} out={out!r} err={err!r} ticket={ticket.exists()}")
 
-        # C2 — a STALE ticket is ignored (still blocks)
+        # C2 — a STALE ticket is ignored (still blocks) and is consumed on sight
         ticket.write_text(json.dumps({"reason": "DONE", "detail": "x", "ts": time.time() - 9999}), encoding="utf-8")
         _, out, _ = run_gate(proj, env_extra={"ANTISTALL_TICKET_MAX_AGE_S": "300"})
         if '"decision": "block"' not in out:
             failures.append(f"C2 (stale ticket ignored -> block): out={out!r}")
+        if ticket.exists():
+            failures.append("C2 (stale ticket should be consumed on sight): ticket still exists")
+
+        # C3 — BLOCKED ticket also allows the stop
+        if count.exists():
+            count.unlink()
+        ticket.write_text(json.dumps({"reason": "BLOCKED", "detail": "x", "ts": time.time()}), encoding="utf-8")
+        rc, out, err = run_gate(proj)
+        if not (rc == 0 and out.strip() == "" and not ticket.exists() and "ALLOWED" in err):
+            failures.append(f"C3 (BLOCKED ticket allow+consume): rc={rc} out={out!r} err={err!r} ticket={ticket.exists()}")
+
+        # C4 — QUESTION ticket also allows the stop
+        if count.exists():
+            count.unlink()
+        ticket.write_text(json.dumps({"reason": "QUESTION", "detail": "x", "ts": time.time()}), encoding="utf-8")
+        rc, out, err = run_gate(proj)
+        if not (rc == 0 and out.strip() == "" and not ticket.exists() and "ALLOWED" in err):
+            failures.append(f"C4 (QUESTION ticket allow+consume): rc={rc} out={out!r} err={err!r} ticket={ticket.exists()}")
 
         # D — anti-loop cap escapes after CAP consecutive blocks
         if count.exists():
@@ -82,7 +100,7 @@ def main() -> int:
         for f in failures:
             print("  -", f)
         return 1
-    print("OK: anti-stall gate — silent / block / allow+consume / stale-ignored / anti-loop all pass")
+    print("OK: anti-stall gate — silent / block / allow+consume / stale-ignored / BLOCKED / QUESTION / anti-loop all pass")
     return 0
 
 
