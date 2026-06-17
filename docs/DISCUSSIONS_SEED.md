@@ -7,6 +7,21 @@ post these via `gh api graphql` — see the repo's publish notes.)
 
 ---
 
+## 📣 Announcements — "AntiStallClaude 0.1.1: critical loop fix — update now"
+
+**If you installed 0.1.0, please update.** 0.1.0 shipped a bug in the `Stop`
+hook itself: in some conditions it could re-block an agent that was *already*
+continuing because of a prior block, creating an endless loop that never lets the
+session go idle and burns tokens without limit. 0.1.1 fixes it two independent
+ways — the hook now honors the harness's "already continuing" signal
+(`stop_hook_active`) and always yields to it, and the anti-loop counter is now
+per-session and fails *open* (any doubt about it allows the stop instead of
+blocking again). Replace `antistall-gate.py` with the 0.1.1 version, or re-run
+`install.py`. Full write-up + an 8-report audit are in the repo
+(`CHANGELOG.md`, `docs/audits/`).
+
+---
+
 ## 📣 Announcements — "AntiStallClaude 0.1.0 is here: stop your agent quitting early"
 
 Autonomous coding agents stall. Mid-task, with work still queued and nothing
@@ -20,8 +35,9 @@ model's reasoning — the exact thing that's failing.
 **AntiStallClaude 0.1.0** is the structural fix: a project-level `Stop` hook the
 harness runs on every turn-end. While a sprint is armed, ending a turn is
 **blocked** unless the agent writes a single-use stop-ticket declaring `DONE`,
-`BLOCKED`, or `QUESTION`. An anti-loop cap guarantees a real dead-end always
-escapes; the gate is silent when no sprint is armed.
+`BLOCKED`, or `QUESTION`. It can never loop or trap a session — it honors the
+harness's "already continuing" signal and yields, with a per-session, fail-open
+counter as a second guard — and it's silent when no sprint is armed.
 
 It was extracted from a real session: an agent that kept announce-then-halting
 mid-build, and a human who finally asked, *"is there a hard hook we can put in
