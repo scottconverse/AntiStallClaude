@@ -10,9 +10,9 @@
 # harness runs on EVERY Stop event regardless of what the model "remembers".
 #
 # State files (all in <project>/.claude/):
-#   sprint-gate.json          {"active": true, "note": "..."}   gate armed when active
-#   sprint-stop-ticket.json   {"reason":"DONE|BLOCKED|QUESTION","detail":"...","ts":<epoch>}
-#   .antistall-block-count    integer, consecutive blocks (anti-loop counter)
+#   sprint-gate.json               {"active": true, "note": "..."}  gate armed when active
+#   sprint-stop-ticket.json        {"reason":"DONE|BLOCKED|QUESTION","detail":"...","ts":<epoch>}
+#   .antistall-block-count-<sid>   integer, consecutive blocks (anti-loop counter; per-session)
 #
 # Behavior:
 #   - sprint NOT active            -> exit 0 (silent; normal conversation ungated)
@@ -30,21 +30,23 @@
 # never goes idle and tokens burn without limit. This is the single most
 # dangerous failure mode of any blocking Stop hook, and earlier versions of this
 # file had it (the only brake was a consecutive-block counter that reset to 0 on
-# any read error, so two agents sharing the counter file — or any mid-write race
-# — pinned it near 1 and the cap was never reached).
+# any read error, AND was shared by every agent in the project, so two agents —
+# or any mid-write race — kept it pinned below the cap and the gate looped).
 #
 # Two INDEPENDENT guarantees now prevent it:
 #   (1) PRIMARY — honor `stop_hook_active`. The agent harness sets this field to
 #       true on a Stop that is itself the result of a previous Stop-hook block.
-#       When true, ALWAYS allow the stop. This bound depends on NO shared mutable
-#       file, so it is immune to the cross-agent counter race. It caps the gate
-#       at one nudge per continuation chain — the gate still stops a drift-stop,
-#       it just cannot loop on it.
-#   (2) SECONDARY — the consecutive-block counter now FAILS OPEN. For any harness
-#       that does not surface `stop_hook_active`, the counter still caps the
-#       loop; and crucially, ANY uncertainty about the counter (unreadable,
-#       unparseable, or unwritable) ALLOWS the stop instead of blocking again. A
-#       loop guard that can itself loop is worse than no guard.
+#       When true, ALWAYS allow the stop. This bound depends on NO shared file,
+#       so it is immune to any counter race. It caps the gate at one nudge per
+#       continuation chain — the gate still stops a drift-stop, it just cannot
+#       loop on it.
+#   (2) SECONDARY — a PER-SESSION consecutive-block counter that FAILS OPEN. The
+#       counter file name is keyed on the Stop payload's `session_id`, so two
+#       agents NEVER share it (closing the cross-agent race for real, not just in
+#       docs). For a harness that doesn't surface `stop_hook_active`, the counter
+#       still caps the loop; and ANY uncertainty about it (missing parses as 0;
+#       unreadable / empty / corrupt / unwritable all ALLOW the stop). A loop
+#       guard that can itself loop is worse than no guard.
 #
 # Stop hooks signal "keep going" via a JSON {"decision":"block"} on stdout,
 # NOT via exit code 2 (that is the PreToolUse convention). Exit 0 either way.
@@ -58,8 +60,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import sys
 import time
+from typing import NoReturn
 
 TAG = "[ANTI-STALL]"
 VALID_REASONS = {"DONE", "BLOCKED", "QUESTION"}
@@ -83,6 +87,18 @@ def _claude_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[1]
 
 
+def _count_path(claude_dir: pathlib.Path, payload: dict) -> pathlib.Path:
+    # PER-SESSION counter: keying the file name on session_id means two agents
+    # working in the same project never share the counter, so the consecutive-
+    # block count cannot be corrupted by a concurrent read-modify-write race.
+    # Fall back to a shared name only when the harness gives us no session id.
+    sid = payload.get("session_id")
+    if isinstance(sid, str) and sid.strip():
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80]
+        return claude_dir / f".antistall-block-count-{safe}"
+    return claude_dir / ".antistall-block-count"
+
+
 def _read_json(p: pathlib.Path):
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -97,16 +113,16 @@ def _safe_unlink(p: pathlib.Path) -> None:
         pass
 
 
-def _allow(msg: str) -> None:
+def _allow(msg: str) -> NoReturn:
     """Permit the stop: write a one-line stderr note and exit 0 (no block)."""
     sys.stderr.write(f"{TAG} {msg}\n")
     sys.exit(0)
 
 
 def main() -> None:
-    # Drain stdin and parse the Stop payload. We need `stop_hook_active` from it,
-    # but a framing change must never wedge the session: an unparseable payload
-    # yields {} and we fall through to the flag check (fail-open).
+    # Drain stdin and parse the Stop payload. We need `stop_hook_active` and
+    # `session_id` from it, but a framing change must never wedge the session:
+    # an unparseable payload yields {} and we fall through (fail-open).
     raw = ""
     try:
         raw = sys.stdin.read()
@@ -126,11 +142,14 @@ def main() -> None:
 
     cap = _int_env("ANTISTALL_BLOCK_CAP", 6)
     max_age = _int_env("ANTISTALL_TICKET_MAX_AGE_S", 300)
-    count_path = claude_dir / ".antistall-block-count"
+    count_path = _count_path(claude_dir, payload)
+    ticket_path = claude_dir / "sprint-stop-ticket.json"
 
     # (1) PRIMARY LOOP GUARD — never block a stop that is itself the product of a
-    # prior Stop-hook block. Race-proof: depends on no shared mutable state.
+    # prior Stop-hook block. Race-proof: depends on no shared mutable state. Also
+    # consume any pending ticket here so it can't be re-used on a later stop.
     if payload.get("stop_hook_active"):
+        _safe_unlink(ticket_path)
         _safe_unlink(count_path)
         _allow(
             "stop ALLOWED (loop guard: stop_hook_active). The gate nudges a "
@@ -138,7 +157,7 @@ def main() -> None:
         )
 
     # Single-use ticket: consume whether or not it is valid; honor it if fresh.
-    ticket_path = claude_dir / "sprint-stop-ticket.json"
+    # `0 <= age` rejects a future-dated ts (clock skew / hand-edited ticket).
     ticket = _read_json(ticket_path)
     if isinstance(ticket, dict):
         _safe_unlink(ticket_path)
@@ -147,12 +166,14 @@ def main() -> None:
             age = time.time() - float(ticket.get("ts", 0))
         except Exception:
             age = 1e9
-        if reason in VALID_REASONS and age < max_age:
+        if reason in VALID_REASONS and 0 <= age < max_age:
             _safe_unlink(count_path)
             _allow(f"stop ALLOWED: {reason} — {ticket.get('detail', '')}")
 
-    # (2) SECONDARY LOOP GUARD — consecutive-block counter that FAILS OPEN. Any
-    # uncertainty about the counter allows the stop; it must never cause a loop.
+    # (2) SECONDARY LOOP GUARD — per-session consecutive-block counter that FAILS
+    # OPEN. Any uncertainty about the counter allows the stop; it must never cause
+    # a loop. A missing file is a clean 0; an empty/whitespace file strips to ""
+    # and trips the corrupt branch below (int("") raises) — also fail-open.
     try:
         current = count_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
@@ -160,14 +181,12 @@ def main() -> None:
     except Exception:
         # Can't read it -> can't prove we haven't already looped -> allow.
         _allow("stop ALLOWED (loop guard: block-counter unreadable; failing open).")
-        return
     try:
         n = int(current) + 1
     except Exception:
-        # Corrupt counter (e.g. a partial concurrent write) -> allow + reset.
+        # Empty / corrupt counter (e.g. a partial concurrent write) -> allow + reset.
         _safe_unlink(count_path)
         _allow("stop ALLOWED (loop guard: block-counter corrupt; failing open).")
-        return
     if n >= cap:
         _safe_unlink(count_path)
         _allow(
@@ -175,13 +194,11 @@ def main() -> None:
             f"DONE/BLOCKED/QUESTION ticket was written for {cap} turns; the sprint flag "
             f"may be stale (clear .claude/sprint-gate.json)."
         )
-        return
     try:
         count_path.write_text(str(n), encoding="utf-8")
     except Exception:
         # Can't persist progress -> the next read can't advance -> would loop. Allow.
         _allow("stop ALLOWED (loop guard: cannot persist block-counter; failing open).")
-        return
 
     reason_msg = (
         f"{TAG} A sprint is ACTIVE and you are ending the turn with no valid stop-ticket. "

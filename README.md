@@ -2,7 +2,12 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.1.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+Version 0.1.1 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+
+> **Upgrading from 0.1.0?** 0.1.0 shipped a `Stop`-hook bug that could loop
+> forever and burn tokens (the counter failed closed and the hook ignored
+> `stop_hook_active`). **Replace `antistall-gate.py` with the 0.1.1 version** (or
+> re-run `install.py`). See the [CHANGELOG](CHANGELOG.md).
 
 > **Runtime support — read this honestly.** The gate is built against **Claude
 > Code's** `Stop`-hook contract: it returns `{"decision":"block"}` on stdout and
@@ -58,11 +63,13 @@ mode of this kind of hook. Two independent guards prevent it:
    allows the stop. So the gate nudges a drift-stop at most **once per
    continuation chain** — it stops the drift, it can't loop on it. This depends
    on no shared file, so it's immune to races.
-2. **Fail-open anti-loop cap (secondary).** For any runtime that doesn't surface
-   `stop_hook_active`, a consecutive-block counter (default 6) still caps the
-   loop — and *any* uncertainty about that counter (unreadable, corrupt, or two
-   agents racing on the file) **allows** the stop rather than blocking again. A
-   loop guard must never be able to loop itself.
+2. **Per-session, fail-open anti-loop cap (secondary).** For any runtime that
+   doesn't surface `stop_hook_active`, a consecutive-block counter (default 6)
+   still caps the loop. The counter file is **keyed on the session id**, so two
+   agents in one project never share it — closing the cross-agent race for real,
+   not just on paper. And *any* uncertainty about the counter (missing, empty,
+   corrupt, unreadable, or unwritable) **allows** the stop rather than blocking
+   again. A loop guard must never be able to loop itself.
 
 When no sprint is armed, the gate is **silent**: normal conversational turns are
 never gated.
@@ -75,7 +82,7 @@ agent writes "next I'll do X" and tries to end, the hook bounces it back into X.
 ## How it works
 
 ```
-agent finishes a turn ──▶ harness runs .claude/hooks/antistall-gate.sh
+agent finishes a turn ──▶ harness runs antistall-gate.sh  (thin wrapper → execs antistall-gate.py; all logic is in the .py)
                                    │
                   sprint armed? ───┼─── no ──▶ exit 0  (silent)
                                    │
@@ -175,7 +182,7 @@ In a session started *after* install:
 
 ```bash
 python3 .claude/hooks/antistall.py arm "gate test"
-# now try to end your turn with no ticket → you should be BLOCKED with [ANTI-STALL] … KEEP WORKING
+# now try to end your turn with no ticket → you should be BLOCKED with [ANTI-STALL] (or your configured TAG) … KEEP WORKING
 python3 .claude/hooks/antistall.py done "test complete"   # now you can stop
 ```
 
@@ -189,7 +196,7 @@ python3 tests/test_gate.py
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the escape hatch (allows the Nth turn-end after N−1 forced continuations) |
+| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the secondary escape hatch (allows the Nth turn-end after N−1 forced continuations). Only reached on a runtime that does **not** surface `stop_hook_active`; on Claude Code/Cowork the primary guard caps nudges at exactly **1** per chain, so this is rarely hit. |
 | `ANTISTALL_TICKET_MAX_AGE_S` | `300` | a stop-ticket older than this is stale |
 
 ## Removal

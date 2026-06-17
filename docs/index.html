@@ -53,11 +53,14 @@
 <body>
 <header>
   <div class="wrap">
-    <div class="tag">v0.1.0 · MIT · Claude Code &amp; Cowork</div>
+    <div class="tag">v0.1.1 · MIT · Claude Code &amp; Cowork</div>
     <h1>Stop AI coding agents from <span class="em">quitting early</span>.</h1>
     <p class="sub">AntiStallClaude is a harness-enforced <code>Stop</code> hook that blocks the
       “announce-then-halt” drift — where an agent ends a turn with unfinished, authorized work.
       Advice in a config file gets rationalized away. A hook can’t be.</p>
+    <p class="sub" style="font-size:0.9em;opacity:0.85"><strong>On 0.1.0?</strong> Update to 0.1.1 — 0.1.0 had a
+      <code>Stop</code>-hook bug that could loop and burn tokens. Replace <code>antistall-gate.py</code> or re-run
+      <code>install.py</code>.</p>
     <div class="btns">
       <a class="btn primary" href="https://github.com/scottconverse/AntiStallClaude">Get it on GitHub</a>
       <a class="btn ghost" href="https://github.com/scottconverse/AntiStallClaude/blob/main/docs/MANUAL.md">Read the manual</a>
@@ -95,16 +98,17 @@
         │ yes
    stop_hook_active? ── yes ──▶ allow (loop guard — never block a continuation a block caused)
         │ no
-   fresh DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume, allow
+   fresh (&lt; max-age) DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume, allow   [any ticket file is single-use: consumed on read, fresh or stale]
         │ no
-   block count ≥ cap, or counter unreadable/corrupt? ── yes ──▶ allow (fail-open escape)
+   per-session block count ≥ cap, or counter anomaly? ── yes ──▶ allow (fail-open escape)
         │ no
         ▼
    { "decision": "block", "reason": "KEEP WORKING …" } ─▶ agent continues</div>
   <p style="margin-top:16px"><strong>The gate can never loop or trap a session.</strong> It honors
     <code>stop_hook_active</code> — always allowing a stop that a prior block caused, so it nudges a drift-stop
-    at most once per continuation chain. A fail-open anti-loop cap (default 6) is a second, independent guard:
-    any unreadable or corrupt counter allows the stop rather than blocking again. When no sprint is armed, the
+    at most once per continuation chain. A <strong>per-session</strong>, fail-open anti-loop cap (default 6) is a
+    second, independent guard: the counter is keyed on the session id so two agents never share it, and any
+    missing/empty/corrupt/unreadable/unwritable counter allows the stop rather than blocking again. When no sprint is armed, the
     gate is <strong>silent</strong> — normal chat is never gated.</p>
 </div></section>
 

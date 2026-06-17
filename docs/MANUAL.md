@@ -1,6 +1,6 @@
 # AntiStallClaude — Manual
 
-Version 0.1.0
+Version 0.1.1
 
 This manual covers the design, the internals, the operating protocol, the Cowork
 specifics, configuration, the behavioral test, and an FAQ. For a quick start see
@@ -68,12 +68,16 @@ without limit. Two **independent** guards prevent that here:
    **once per continuation chain** — it stops the drift but cannot loop on it.
    This guarantee depends on no shared file, so it is immune to races between
    two agents sharing the same project `.claude/`.
-2. **Fail-open anti-loop cap (secondary).** For a runtime that does not surface
-   `stop_hook_active`, the consecutive-block counter still caps the loop: once it
-   reaches `ANTISTALL_BLOCK_CAP` (default **6**) the gate allows the stop and logs
-   loudly. Crucially, **any** uncertainty about the counter — unreadable, corrupt,
-   or a mid-write race — also **allows** the stop. A loop guard that can itself
-   loop is worse than no guard, so every anomaly fails *open*.
+2. **Per-session, fail-open anti-loop cap (secondary).** For a runtime that does
+   not surface `stop_hook_active`, the consecutive-block counter still caps the
+   loop: once it reaches `ANTISTALL_BLOCK_CAP` (default **6**) the gate allows the
+   stop and logs loudly. The counter file is **keyed on the Stop payload's
+   `session_id`** (`.antistall-block-count-<sid>`), so two agents in one project
+   never share it — the cross-agent read-modify-write race is structurally
+   impossible, not merely unlikely. And **any** uncertainty about the counter —
+   missing (treated as 0), empty, corrupt, unreadable, or unwritable — **allows**
+   the stop. A loop guard that can itself loop is worse than no guard, so every
+   anomaly fails *open*.
 
 > ⚠️ Earlier releases relied on the cap alone, and the counter failed *closed*
 > (a read error reset it to 0, so it never reached the cap). Two agents sharing
@@ -188,7 +192,7 @@ reminder. Confirm with the behavioral test in §7.
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the escape hatch — the stop is allowed on the Nth turn-end attempt, after N−1 forced continuations (5 at the default) |
+| `ANTISTALL_BLOCK_CAP` | `6` | consecutive-block count that trips the *secondary* escape hatch — the stop is allowed on the Nth turn-end attempt, after N−1 forced continuations (5 at the default). This path is only reached on a runtime that does **not** surface `stop_hook_active`; on Claude Code/Cowork the primary guard caps nudges at exactly **1** per continuation chain, so the cap is effectively never hit. |
 | `ANTISTALL_TICKET_MAX_AGE_S` | `300` | a stop-ticket older than this is treated as stale |
 
 Set them in the project's `.claude/settings.json` `env` block or the
@@ -202,8 +206,8 @@ Hooks load at session start, so test in a session started **after** install.
 
 1. `python3 .claude/hooks/antistall.py arm "gate test"`
 2. Try to end the turn with a one-line reply and **no** ticket → you must be
-   **blocked** with `[ANTI-STALL] … KEEP WORKING`. If you stop cleanly, the hook
-   is **not** firing.
+   **blocked** with `[ANTI-STALL] … KEEP WORKING` (or your configured `TAG`, if
+   you customized it). If you stop cleanly, the hook is **not** firing.
 3. `python3 .claude/hooks/antistall.py done "test complete"` → you can now stop.
 
 If step 2 does not block, check, in order:
@@ -211,6 +215,14 @@ If step 2 does not block, check, in order:
 - `.claude/settings.json` is valid JSON and contains the `Stop` entry.
 - `python3` resolves on PATH in the hook runtime.
 - You restarted after install (hooks load at session start).
+
+**Reading the allow signals.** When the gate *allows* a stop it prints a one-line
+`TAG stop ALLOWED: …` to stderr explaining why — e.g. `… stop ALLOWED: DONE — …`
+(valid ticket), or `… stop ALLOWED (loop guard: stop_hook_active) …` (the agent
+was already continuing from a prior block — this is the normal "second attempt is
+allowed" behavior, not a failure), or `… failing open …` (a counter anomaly). If
+you ever see the loop-guard line on *every* turn, the harness is setting
+`stop_hook_active` and the gate is correctly nudging once then yielding.
 
 There is also a harness-free unit test: `python3 tests/test_gate.py`.
 

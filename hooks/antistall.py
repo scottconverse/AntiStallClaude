@@ -27,7 +27,15 @@ import time
 CLAUDE = pathlib.Path(__file__).resolve().parents[1]
 FLAG = CLAUDE / "sprint-gate.json"
 TICKET = CLAUDE / "sprint-stop-ticket.json"
-COUNT = CLAUDE / ".antistall-block-count"
+
+
+def _clear_counts() -> None:
+    # Counters are per-session (.antistall-block-count-<sid>); clear them all.
+    for p in CLAUDE.glob(".antistall-block-count*"):
+        try:
+            p.unlink()
+        except Exception:
+            pass
 
 
 def _write_ticket(reason: str, detail: str) -> None:
@@ -43,12 +51,16 @@ def main(argv: list[str]) -> int:
 
     if cmd == "arm":
         FLAG.write_text(json.dumps({"active": True, "note": detail}), encoding="utf-8")
-        for p in (TICKET, COUNT):
-            try:
-                p.unlink()
-            except Exception:
-                pass
-        print(f"armed: sprint gate ACTIVE — {detail or '(no note)'}")
+        try:
+            TICKET.unlink()
+        except Exception:
+            pass
+        _clear_counts()
+        print(
+            f"armed: sprint gate ACTIVE — {detail or '(no note)'}\n"
+            "  (enforced only if the Stop hook is installed and you've restarted the "
+            "session — prove it with the MANUAL §7 behavioral test)"
+        )
     elif cmd == "done":
         _write_ticket("DONE", detail)
         try:
@@ -66,10 +78,17 @@ def main(argv: list[str]) -> int:
         except Exception:
             armed, note = False, ""
         try:
-            ticket = TICKET.read_text(encoding="utf-8")
+            t = json.loads(TICKET.read_text(encoding="utf-8"))
+            age = max(0, int(time.time() - float(t.get("ts", 0))))
+            ticket = f"{t.get('reason', '?')} ({age}s ago) — {t.get('detail', '')}"
         except Exception:
             ticket = "none"
-        print(f"armed={armed} note={note!r} pending_ticket={ticket}")
+        state = "ARMED" if armed else "disarmed"
+        line = f"Sprint gate: {state}."
+        if note:
+            line += f" Note: {note}."
+        line += f" Pending stop-ticket: {ticket}"
+        print(line)
     else:
         print(f"unknown command: {cmd!r} (use arm|done|blocked|question|status)", file=sys.stderr)
         return 2

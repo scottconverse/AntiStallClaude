@@ -18,12 +18,28 @@ All notable changes to AntiStallClaude are documented here. Format follows
   - **Honor `stop_hook_active`** (primary, race-proof): always allow a stop that is
     itself the product of a prior block. Caps the gate at one nudge per
     continuation chain — depends on no shared file.
-  - **Fail-open anti-loop counter** (secondary): any unreadable / corrupt /
-    unwritable counter now **allows** the stop instead of blocking again.
-  Regression tests added to `tests/test_gate.py` (E: `stop_hook_active` allow,
-  F: corrupt-counter fail-open, G: bounded-loop ≤1 block). Docs corrected (README,
-  MANUAL §"Safety") — the anti-loop cap is no longer described as the sole
-  guarantee. **Anyone running an earlier `antistall-gate.py` should update.**
+  - **Per-session, fail-open anti-loop counter** (secondary): the counter file is
+    keyed on the Stop payload's `session_id` (`.antistall-block-count-<sid>`), so
+    two agents in one project never share it — the cross-agent read-modify-write
+    race is now structurally impossible, not merely unlikely. And any missing /
+    empty / corrupt / unreadable / unwritable counter now **allows** the stop
+    instead of blocking again.
+  **Anyone running an earlier `antistall-gate.py` should update.**
+
+### Hardened (post-fix audit pass — audit-lite + walkthrough + 5-role audit-team)
+- Loop-guard branch now also consumes any pending stop-ticket (no stale re-use).
+- Future-dated ticket `ts` (clock skew / hand-edit) is treated as stale (`0 <= age`).
+- Tests expanded in `tests/test_gate.py`: all four fail-open branches
+  (corrupt/empty/unreadable/unwritable), exact cap boundary, per-session counter
+  isolation, `CLAUDE_PROJECT_DIR`-unset self-locating fallback, the two shipped
+  copies byte-identical, and a `.sh` wrapper smoke test. The bounded-loop sentinel
+  (case G) simulates the real harness auto-continue loop and fails if it blocks twice.
+- Docs accuracy: version strings bumped to 0.1.1 on README/MANUAL/landing; upgrade
+  notice added to README + landing; the "N−1 forced continuations" figure is now
+  qualified (on Claude Code/Cowork the primary guard caps nudges at 1); the
+  `[ANTI-STALL]` verify signal is noted as "or your configured TAG"; the landing
+  flow shows ticket freshness + single-use consume; CHANGELOG cites MANUAL §2
+  (Safety subsection); `antistall-gate.py`'s `_allow` is typed `NoReturn`.
 
 ## [0.1.0] — 2026-06-16
 
