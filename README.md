@@ -2,7 +2,7 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.2.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+Version 0.2.1 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
 
 > **Upgrading from 0.1.0?** 0.1.0 shipped a `Stop`-hook bug that could loop
 > forever and burn tokens (the counter failed closed and the hook ignored
@@ -126,6 +126,15 @@ in `--setting-sources`.)
 The globally-installed gate resolves `CLAUDE_PROJECT_DIR` at runtime, so a single
 gate in `~/.claude/` still reads and writes **each project's own** `.claude/`
 sprint state — arming a sprint in project A never affects project B.
+
+**Multiple sessions in one project (v0.2.1+).** Sprint state is **session-scoped**:
+`arm` writes `sprint-gate-<session_id>.json` (stamped with an `owner`) and the gate
+keys off the Stop payload's `session_id` (the harness exposes the same id to the CLI
+as `CLAUDE_CODE_SESSION_ID`). So two Cowork sessions working in the same folder no
+longer gate each other — only the session that armed a sprint is held to it. A
+pre-0.2.1 project-wide `sprint-gate.json` is still honored for backward compatibility
+(treated as unowned → applies to all sessions, or pin it to one session by adding
+`"owner": "<session_id>"`).
 
 (Some Cowork builds still don't surface project *SessionStart* `additionalContext`;
 the **Stop** hook — the actual enforcement — fires regardless. The `CLAUDE.md`

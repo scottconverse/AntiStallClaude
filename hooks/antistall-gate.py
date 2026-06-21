@@ -106,6 +106,36 @@ def _read_json(p: pathlib.Path):
         return None
 
 
+def _safe_sid(sid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80]
+
+
+def _session_id(payload: dict):
+    sid = payload.get("session_id")
+    return sid if isinstance(sid, str) and sid.strip() else None
+
+
+def _resolve_active_gate(claude_dir: pathlib.Path, sid):
+    # Returns (gate_path, ticket_path) for the active sprint that applies to THIS
+    # session, or (None, None) if none does. SESSION-SCOPED first
+    # (sprint-gate-<sid>.json), so two sessions in one project never gate each other.
+    # Then a legacy project-wide sprint-gate.json, honored only if it is unowned
+    # (pre-0.2.1 — applies to all sessions, preserving old behavior) or explicitly
+    # owned by this session ("owner": "<session_id>").
+    if sid:
+        gp = claude_dir / f"sprint-gate-{_safe_sid(sid)}.json"
+        g = _read_json(gp)
+        if isinstance(g, dict) and g.get("active"):
+            return gp, claude_dir / f"sprint-stop-ticket-{_safe_sid(sid)}.json"
+    legacy = _read_json(claude_dir / "sprint-gate.json")
+    if isinstance(legacy, dict) and legacy.get("active"):
+        owner = legacy.get("owner")
+        if owner is None or owner == sid:
+            return (claude_dir / "sprint-gate.json",
+                    claude_dir / "sprint-stop-ticket.json")
+    return None, None
+
+
 def _safe_unlink(p: pathlib.Path) -> None:
     try:
         p.unlink()
@@ -136,14 +166,14 @@ def main() -> None:
         payload = {}
 
     claude_dir = _claude_dir()
-    flag = _read_json(claude_dir / "sprint-gate.json")
-    if not (isinstance(flag, dict) and flag.get("active")):
-        sys.exit(0)  # no active sprint -> the gate is silent
+    sid = _session_id(payload)
+    gate_path, ticket_path = _resolve_active_gate(claude_dir, sid)
+    if gate_path is None:
+        sys.exit(0)  # no active sprint for this session -> the gate is silent
 
     cap = _int_env("ANTISTALL_BLOCK_CAP", 6)
     max_age = _int_env("ANTISTALL_TICKET_MAX_AGE_S", 300)
     count_path = _count_path(claude_dir, payload)
-    ticket_path = claude_dir / "sprint-stop-ticket.json"
 
     # (1) PRIMARY LOOP GUARD — never block a stop that is itself the product of a
     # prior Stop-hook block. Race-proof: depends on no shared mutable state. Also
@@ -192,7 +222,7 @@ def main() -> None:
         _allow(
             f"anti-loop cap ({cap}) reached — allowing the stop. Investigate why no "
             f"DONE/BLOCKED/QUESTION ticket was written for {cap} turns; the sprint flag "
-            f"may be stale (clear .claude/sprint-gate.json)."
+            f"may be stale (clear {gate_path})."
         )
     try:
         count_path.write_text(str(n), encoding="utf-8")
@@ -203,9 +233,9 @@ def main() -> None:
     reason_msg = (
         f"{TAG} A sprint is ACTIVE and you are ending the turn with no valid stop-ticket. "
         f"KEEP WORKING — finish the next concrete step. To stop legitimately, write "
-        f'{claude_dir}/sprint-stop-ticket.json as '
+        f'{ticket_path} as '
         f'{{"reason":"DONE|BLOCKED|QUESTION","detail":"<why>","ts":<epoch seconds>}} and THEN '
-        f"end the turn (DONE = whole queue done + clear sprint-gate.json; BLOCKED = a decision "
+        f"end the turn (DONE = whole queue done + clear {gate_path}; BLOCKED = a decision "
         f"only the human can make halts ALL remaining work; QUESTION = you asked the human and "
         f"need the answer). Block {n}/{cap}."
     )

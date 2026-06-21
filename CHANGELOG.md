@@ -4,6 +4,25 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.2.1] — 2026-06-21
+
+### Fixed
+- **Cross-session collision: two sessions in one project gated each other.** Sprint
+  state (`sprint-gate.json` / `sprint-stop-ticket.json`) was project-scoped while the
+  loop-guard counter was already session-scoped, so a sprint armed by session A blocked
+  session B in the same folder (e.g. a TinkerQuarry session's gate firing on an
+  unrelated session sharing `Desktop/CODE`). Now sprint state is **session-scoped**:
+  `arm` writes `sprint-gate-<session_id>.json` (with an `owner` field) and the gate keys
+  off the Stop payload's `session_id`. The CLI reads `CLAUDE_CODE_SESSION_ID` (the same
+  id the harness puts in the Stop payload), so arming/ticketing targets exactly the
+  state the gate reads. `_clear_counts` now clears only the current session's counter.
+
+### Compatibility
+- A pre-0.2.1 project-wide `sprint-gate.json` is still honored: treated as unowned
+  (applies to all sessions, old behavior) unless it carries `"owner": "<session_id>"`,
+  in which case only that session is gated. `status` now reports the session scope and
+  flags any legacy/other-owner gate. SessionStart reminder is session-aware too.
+
 ## [0.2.0] — 2026-06-21
 
 ### Added

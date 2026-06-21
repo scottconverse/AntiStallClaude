@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 
@@ -41,13 +42,33 @@ def _resolve_claude() -> pathlib.Path:
 
 
 CLAUDE = _resolve_claude()
-FLAG = CLAUDE / "sprint-gate.json"
-TICKET = CLAUDE / "sprint-stop-ticket.json"
+
+
+def _safe_sid(sid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80]
+
+
+def _session_id():
+    # The gate keys off the Stop payload's session_id; the harness exposes the SAME
+    # id to commands as CLAUDE_CODE_SESSION_ID, so arming/ticketing here targets the
+    # exact per-session state the gate reads. Falls back to legacy project-wide files
+    # when no session id is available (older runtimes / manual use outside a session).
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    return sid if sid and sid.strip() else None
+
+
+SID = _session_id()
+FLAG = CLAUDE / (f"sprint-gate-{_safe_sid(SID)}.json" if SID else "sprint-gate.json")
+TICKET = CLAUDE / (
+    f"sprint-stop-ticket-{_safe_sid(SID)}.json" if SID else "sprint-stop-ticket.json"
+)
 
 
 def _clear_counts() -> None:
-    # Counters are per-session (.antistall-block-count-<sid>); clear them all.
-    for p in CLAUDE.glob(".antistall-block-count*"):
+    # Clear only THIS session's consecutive-block counter(s); never touch another
+    # session's loop-guard state.
+    pat = f".antistall-block-count-{_safe_sid(SID)}*" if SID else ".antistall-block-count*"
+    for p in CLAUDE.glob(pat):
         try:
             p.unlink()
         except Exception:
@@ -66,7 +87,9 @@ def main(argv: list[str]) -> int:
     detail = " ".join(argv[2:]) if len(argv) > 2 else ""
 
     if cmd == "arm":
-        FLAG.write_text(json.dumps({"active": True, "note": detail}), encoding="utf-8")
+        FLAG.write_text(
+            json.dumps({"active": True, "note": detail, "owner": SID}), encoding="utf-8"
+        )
         try:
             TICKET.unlink()
         except Exception:
@@ -100,10 +123,24 @@ def main(argv: list[str]) -> int:
         except Exception:
             ticket = "none"
         state = "ARMED" if armed else "disarmed"
-        line = f"Sprint gate: {state}."
+        scope = f"session {SID[:8]}…" if SID else "project-wide (no session id)"
+        line = f"Sprint gate [{scope}]: {state}."
         if note:
             line += f" Note: {note}."
         line += f" Pending stop-ticket: {ticket}"
+        # Surface a legacy/other-owner project-wide gate so cross-session state is visible.
+        if not armed:
+            legacy = CLAUDE / "sprint-gate.json"
+            try:
+                lg = json.loads(legacy.read_text(encoding="utf-8"))
+                if lg.get("active"):
+                    owner = lg.get("owner")
+                    who = "unowned/all sessions" if owner is None else (
+                        "this session" if owner == SID else f"another session ({str(owner)[:8]}…)"
+                    )
+                    line += f" [legacy {legacy.name} ARMED, owner: {who}]"
+            except Exception:
+                pass
         print(line)
     else:
         print(f"unknown command: {cmd!r} (use arm|done|blocked|question|status)", file=sys.stderr)
