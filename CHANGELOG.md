@@ -4,6 +4,29 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-06-21
+
+### Added
+- **Global / user-level install (`python3 install.py --global`).** Installs the
+  hooks into `~/.claude/` (or `$CLAUDE_CONFIG_DIR`) and wires `Stop` +
+  `SessionStart` with absolute `python3` invocations, so the gate fires for every
+  session in every project with no per-project install. The existing user
+  `settings.json` is preserved/merged (other hooks kept, no duplicates).
+- `antistall.py` (arm/ticket CLI) now resolves state via `CLAUDE_PROJECT_DIR` →
+  `cwd/.claude` → script-relative, matching the gate. A globally-installed CLI
+  therefore arms/tickets the **current project's** state, not `~/.claude`.
+
+### Changed
+- **Corrected the stale "user-level hooks don't fire in Cowork" guidance.** On
+  current builds (verified claude-code 2.1.181) Cowork's Code tab launches with
+  `--setting-sources=user,project,local`, so user-level hooks DO fire — global
+  install works. Proven empirically: a user-source `SessionStart` sentinel fired
+  in a session launched with the Cowork flags. README "Cowork note" updated.
+
+### Fixed
+- Installer now reads `settings.json` as `utf-8-sig`, tolerating a UTF-8 BOM
+  (PowerShell/Windows editors often add one) instead of refusing to merge.
+
 ## [0.1.1] — 2026-06-17
 
 ### Fixed

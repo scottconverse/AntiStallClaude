@@ -2,7 +2,7 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.1.1 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+Version 0.2.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
 
 > **Upgrading from 0.1.0?** 0.1.0 shipped a `Stop`-hook bug that could loop
 > forever and burn tokens (the counter failed closed and the hook ignored
@@ -113,11 +113,23 @@ State lives in the project's `.claude/`:
 
 ## Cowork note (important)
 
-**User-level (`~/.claude/`) hooks do NOT fire in Cowork's Code tab — only
-project-level hooks do.** AntiStallClaude installs everything into the
-project's `.claude/`. (Some Cowork builds also don't surface project
-*SessionStart* `additionalContext`; the project **Stop** hook — the enforcement
-— still fires. The `CLAUDE.md` rule below covers the reminder either way.)
+**Update (verified on claude-code 2.1.181): user-level (`~/.claude/`) hooks now
+DO fire in Cowork's Code tab.** The Code-tab session is launched with
+`--setting-sources=user,project,local`, so user-level settings — and their
+hooks — are loaded. This means a **global install (`--global`) works** and you no
+longer need to install per-project. (Earlier Cowork builds excluded the `user`
+source, which is why prior versions of this doc said user-level hooks don't fire;
+that limitation is gone on current builds. Verify your own build with
+`Get-CimInstance Win32_Process -Filter "Name='claude.exe'"` and look for `user`
+in `--setting-sources`.)
+
+The globally-installed gate resolves `CLAUDE_PROJECT_DIR` at runtime, so a single
+gate in `~/.claude/` still reads and writes **each project's own** `.claude/`
+sprint state — arming a sprint in project A never affects project B.
+
+(Some Cowork builds still don't surface project *SessionStart* `additionalContext`;
+the **Stop** hook — the actual enforcement — fires regardless. The `CLAUDE.md`
+rule below covers the reminder either way.)
 
 ## Install
 
@@ -125,12 +137,21 @@ project's `.claude/`. (Some Cowork builds also don't surface project
 
 ```bash
 git clone https://github.com/scottconverse/AntiStallClaude.git
-python3 AntiStallClaude/install.py /path/to/your/project   # defaults to the current dir
+python3 AntiStallClaude/install.py /path/to/your/project   # project scope; defaults to cwd
+python3 AntiStallClaude/install.py --global                # user-level (~/.claude) — every project
 ```
 
-It copies the hooks into `<project>/.claude/hooks/` and merges the `Stop` +
-`SessionStart` wiring into `<project>/.claude/settings.json` (backing up any
-existing file; idempotent).
+**Project scope** copies the hooks into `<project>/.claude/hooks/` and merges the
+`Stop` + `SessionStart` wiring into `<project>/.claude/settings.json`.
+
+**Global scope** (`--global`) installs into `~/.claude/` (or `$CLAUDE_CONFIG_DIR`)
+and wires the hooks with absolute `python3` invocations so they fire for **every
+session in every project** — no per-project install. See the Cowork note above for
+why this works on current builds. The gate still uses each project's own state at
+runtime. Don't run both scopes for the same project; the installer dedups by hook
+name, but a hand-rolled mix could double-fire.
+
+Both are idempotent and back up any existing `settings.json` first.
 
 ### Option 2 — as a Claude Code skill
 

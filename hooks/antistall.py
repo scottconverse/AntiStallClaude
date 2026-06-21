@@ -20,11 +20,27 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 import time
 
-CLAUDE = pathlib.Path(__file__).resolve().parents[1]
+
+def _resolve_claude() -> pathlib.Path:
+    # Match the gate/session-start resolution so this CLI targets the SAME state
+    # the Stop hook reads — important for a global (~/.claude) install, where this
+    # script lives outside the project. Priority: CLAUDE_PROJECT_DIR (set by the
+    # harness, incl. Cowork) -> cwd/.claude -> this file's parent (project copy).
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env and (pathlib.Path(env) / ".claude").is_dir():
+        return pathlib.Path(env) / ".claude"
+    cwd_claude = pathlib.Path.cwd() / ".claude"
+    if cwd_claude.is_dir():
+        return cwd_claude
+    return pathlib.Path(__file__).resolve().parents[1]
+
+
+CLAUDE = _resolve_claude()
 FLAG = CLAUDE / "sprint-gate.json"
 TICKET = CLAUDE / "sprint-stop-ticket.json"
 
