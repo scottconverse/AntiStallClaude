@@ -4,6 +4,24 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.3.2] — 2026-06-22
+
+### Fixed — disarm UX (the gated agent wouldn't bring up the passphrase box)
+- **The gate now tells the agent to run `release` itself on a stop request — which pops the
+  masked password box for the human.** Real-world failure: when the user said "disarm," the
+  gated agent would (a) tell them to run a command in a terminal they don't use, (b) point them
+  at an obscure `.cmd` file to hunt for, or (c) **falsely claim "you released it"** while the gate
+  was still armed and blocking. The disarm window never reliably appeared.
+- **Rewrote the gate's block message** (`antistall-gate.py`) to instruct, on any
+  stop/disarm/cancel request: *immediately run `python3 <hooks>/antistall.py release`* — it opens
+  the password box on the user's screen for them to type into (the agent can open it, never fill
+  it). It now **explicitly forbids**: pointing the user at a terminal, sending them to find a
+  `.cmd`/file, or claiming the user released it. This message is re-read on every block, so the
+  fix takes effect immediately in already-running sessions (no restart).
+- Reworded the `arm` confirmation, the no-secret refusal, and `SKILL.md` to match: "just tell the
+  agent disarm → box pops; no file, no terminal." The double-click launchers are now documented
+  as a **fallback**, not the primary path. README updated.
+
 ## [0.3.1] — 2026-06-22
 
 ### Added — no-CLI (Cowork) secret entry

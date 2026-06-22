@@ -239,14 +239,18 @@ def main() -> None:
     except Exception:
         _allow("stop PAUSED (cannot persist counter). Sprint STILL ARMED — re-enforces next turn.")
 
+    antistall_py = pathlib.Path(__file__).resolve().with_name("antistall.py")
     reason_msg = (
-        f"{TAG} A sprint is ACTIVE — you may NOT end the turn. KEEP WORKING: finish the next "
-        f"concrete step, then the next, until the whole queue is genuinely complete. You CANNOT "
-        f"stop or disarm this yourself — there is no DONE/ticket you can write; only a human, "
-        f"with the release passphrase, can end it via 'python3 antistall.py release'. Do NOT "
-        f"declare the work done to escape — finish it. If you are truly blocked on a human-only "
-        f"decision, run 'python3 antistall.py request \"<why>\"' to notify the operator, then "
-        f"KEEP WORKING on anything else still buildable. Block {n}"
+        f"{TAG} A sprint is ACTIVE — do NOT end the turn. Keep working until the goal is genuinely "
+        f"done. You cannot stop or disarm yourself (no DONE, no ticket). "
+        f"IF THE HUMAN ASKS YOU TO STOP / DISARM / CANCEL / \"that's enough\": immediately run "
+        f"`python3 \"{antistall_py}\" release` — that pops a PASSWORD BOX on their screen for THEM to "
+        f"type into (you can't supply the passphrase, and that's fine; the box appears, you just can't "
+        f"fill it). Do NOT tell them to open a terminal, do NOT point them at a .cmd or any file to "
+        f"find, and do NOT claim they released you. Just run release; the box appears. "
+        f"If you're genuinely blocked on a human-only decision, run "
+        f"`python3 \"{antistall_py}\" request \"<why>\"` to ping them, then keep working on anything "
+        f"else still buildable. Block {n}"
         + (f"/{cap}" if cap > 0 else " (no cap; held until human release)") + "."
     )
     print(json.dumps({"decision": "block", "reason": reason_msg}))

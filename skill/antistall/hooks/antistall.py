@@ -250,9 +250,9 @@ def main(argv: list[str]) -> int:
     if cmd == "arm":
         if not _secret_exists():
             print("REFUSING TO ARM: no release secret is set, so the sprint could only be "
-                  "disarmed by the agent — which defeats the gate. A human must set one first "
-                  "(it pops a password box; the agent never sees it): double-click "
-                  "Set-AntiStall-Secret.cmd, or run 'antistall.py set-release-secret'.",
+                  "disarmed by the agent — which defeats the gate. Set one first: tell the agent "
+                  "\"set the antistall passphrase\" and it pops a PASSWORD BOX for you to type into "
+                  "(the agent never sees it). No file to find, no terminal.",
                   file=sys.stderr)
             return 5
         FLAG.write_text(
@@ -262,9 +262,9 @@ def main(argv: list[str]) -> int:
         _clear_counts()
         who = f"session {SID[:8]}…" if SID else "project-wide"
         print(f"armed: sprint gate ACTIVE [{who}] — {detail or '(no note)'}\n"
-              "  DISARM IS HUMAN-ONLY: double-click Release-Sprint.cmd (pops a password box), "
-              "or tell Claude to disarm and type your passphrase into the dialog. "
-              "The agent cannot turn this off.")
+              "  TO STOP: just tell the agent \"disarm\" (or \"stop\"/\"that's enough\"). It will "
+              "pop a PASSWORD BOX on your screen — type your passphrase there and it ends. "
+              "No file to find, no terminal. The agent can pop the box but can never fill it.")
         return 0
 
     # ---- release (human only; the ONLY disarm) --------------------------------------

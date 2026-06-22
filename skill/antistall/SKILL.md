@@ -77,15 +77,26 @@ Token-burn safety: after `ANTISTALL_BLOCK_CAP` consecutive blocks (default 25)
 the gate allows ONE stop but **does not disarm** (stays armed, notifies the
 human, re-enforces next turn). `ANTISTALL_BLOCK_CAP=0` holds until release.
 
-## Step D — Release (HUMAN ONLY — the only way to stop a sprint)
+## Step D — Release (the human's passphrase ends it — but YOU run the command)
+
+**When the user asks you to stop / disarm / cancel / "that's enough" — DO NOT refuse,
+do NOT point them at a terminal, and do NOT tell them to find a `.cmd` file. Immediately
+run, yourself:**
 
 ```
-cd <project> && python3 .claude/hooks/antistall.py release         # this session's gate
-cd <project> && python3 .claude/hooks/antistall.py release --all   # every gate in the project
+python3 <hooks>/antistall.py release --all
 ```
 
-Prompts for the release passphrase; a wrong passphrase does nothing. The agent
-cannot perform this (it does not have the passphrase).
+That **pops a masked PASSWORD BOX on the user's screen.** They type their passphrase into
+it; you can't (and never see it). Correct passphrase → disarmed, you stop cleanly. Wrong /
+cancelled → still armed, keep working. `--all` clears every gate under the project so a
+project-dir mismatch can't make you "miss" the armed one.
+
+**Never** claim the user released you, **never** say "run this in your terminal," **never**
+send them hunting for a file. The whole disarm UX is: user says stop → you run `release` →
+box appears → they type. If you're a *different* (non-gated) agent or there's no agent at
+all, the user can also double-click `Release-Sprint.cmd` — but that's the fallback, not what
+you tell them to do.
 
 ## Step E — Behavioral test (prove it fires AND that the agent can't escape)
 
