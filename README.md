@@ -2,7 +2,7 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.3.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+Version 0.3.1 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
 
 > **Upgrading from 0.1.0?** 0.1.0 shipped a `Stop`-hook bug that could loop
 > forever and burn tokens (the counter failed closed and the hook ignored
@@ -209,6 +209,18 @@ python3 .claude/hooks/antistall.py release --all    # every gate in the project
 
 python3 .claude/hooks/antistall.py status           # armed state + whether a secret is set
 ```
+
+**No terminal? (Cowork / GUI users — v0.3.1).** You never have to touch a CLI. On Windows,
+`set-release-secret` and `release` pop a **masked password dialog** (the agent launches the
+window but cannot see what you type into it). Two **double-click launchers** are installed next
+to the hooks so it's pure point-and-click:
+
+- **`Set-AntiStall-Secret.cmd`** — set/change your passphrase (masked box).
+- **`Release-Sprint.cmd`** — pick the project, type your passphrase, disarm.
+
+`install.py` copies both into the `.claude/` dir (e.g. `~/.claude/`). To disarm from a chat
+agent instead, tell it "disarm" — it pops the same box; you type the passphrase; it still can't
+supply it. The passphrase is stored only as a salted PBKDF2 hash; the agent never sees it.
 
 Token-burn safety: after `ANTISTALL_BLOCK_CAP` consecutive blocks (default **25**) the gate
 allows ONE stop so a stuck agent can't burn tokens forever — but this **pauses without

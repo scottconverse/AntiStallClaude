@@ -45,6 +45,11 @@ HOOK_FILES = (
     "antistall-session-start.sh",
     "antistall.py",
 )
+# Double-click launchers (GUI, no CLI) copied to the .claude root next to hooks/.
+LAUNCHER_FILES = (
+    "Set-AntiStall-Secret.cmd",
+    "Release-Sprint.cmd",
+)
 # Project scope: self-locating .sh wrappers under the project's .claude.
 GATE_CMD = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/antistall-gate.sh'
 SESSION_CMD = '"$CLAUDE_PROJECT_DIR"/.claude/hooks/antistall-session-start.sh'
@@ -106,6 +111,19 @@ def main(argv: list[str]) -> int:
             except OSError:
                 pass
     print(f"copied {len(HOOK_FILES)} hook scripts -> {hooks}")
+
+    # Double-click GUI launchers (set-secret / release) — copied next to hooks/ so they
+    # self-locate antistall.py via %~dp0hooks. Lets a no-CLI (Cowork) user manage the
+    # secret entirely by point-and-click.
+    src_launchers = pathlib.Path(__file__).resolve().parent / "launchers"
+    copied_launchers = 0
+    for name in LAUNCHER_FILES:
+        src = src_launchers / name
+        if src.exists():
+            shutil.copyfile(src, claude / name)
+            copied_launchers += 1
+    if copied_launchers:
+        print(f"copied {copied_launchers} double-click launcher(s) -> {claude}")
 
     settings_path = claude / "settings.json"
     settings: dict = {}

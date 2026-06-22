@@ -4,6 +4,24 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.3.1] — 2026-06-22
+
+### Added — no-CLI (Cowork) secret entry
+- **Masked GUI password dialog for `set-release-secret` and `release`.** On Windows these now
+  pop a native masked input box instead of requiring a terminal. The agent can launch the
+  window but cannot read what is typed into it — the human-only property holds in a pure
+  point-and-click (Cowork) workflow with no terminal.
+- **Two double-click launchers** (`launchers/Set-AntiStall-Secret.cmd`, `Release-Sprint.cmd`),
+  copied by `install.py` into the `.claude/` dir. They use windowless `pythonw` so only the
+  password box appears — no console. `Release-Sprint.cmd` pops a folder picker to choose the
+  project, then the masked passphrase box.
+
+### Fixed
+- **Secret prompt fell back to a terminal `getpass` when a console was attached** (e.g. launched
+  via `Start-Process` or a `.cmd`), so a desktop user saw a confusing console instead of the
+  masked box. `_read_passphrase` now prefers the GUI dialog on Windows **always** (env override
+  still wins; terminal `getpass` remains the fallback when the GUI is unavailable).
+
 ## [0.3.0] — 2026-06-21
 
 ### Changed (BREAKING) — human-only disarm

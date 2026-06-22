@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import base64
 import getpass
 import hashlib
 import hmac
@@ -100,17 +101,90 @@ def _secret_exists() -> bool:
     return SECRET_FILE.is_file()
 
 
-def _read_passphrase(prompt: str) -> str:
-    # Env override for non-interactive HUMAN use (CI). The agent can't use this: it would
-    # still need the correct passphrase, which it does not have.
+def _ps_str(s: str) -> str:
+    # Single-quoted PowerShell string literal (escape embedded single quotes).
+    return "'" + str(s).replace("'", "''") + "'"
+
+
+def _run_ps_capture(ps: str):
+    # Run a PowerShell snippet via -EncodedCommand (no quoting hell) and capture stdout.
+    # The captured stdout is consumed INTERNALLY and never re-emitted, so a secret typed
+    # into a GUI dialog here never reaches this process's own stdout (what an agent sees).
+    enc = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    try:
+        p = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc],
+            capture_output=True, text=True,
+        )
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    return p.stdout
+
+
+def _gui_password(title: str, prompt: str):
+    # Masked Windows dialog. Returns the typed text, or None on cancel / unavailable.
+    # COWORK PATH: the agent can launch this window but cannot see what is typed into it.
+    if os.name != "nt":
+        return None
+    ps = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$f = New-Object System.Windows.Forms.Form
+$f.Text = {_ps_str(title)}
+$f.Size = New-Object System.Drawing.Size(460,190)
+$f.StartPosition = 'CenterScreen'; $f.TopMost = $true
+$f.FormBorderStyle = 'FixedDialog'; $f.MinimizeBox = $false; $f.MaximizeBox = $false
+$l = New-Object System.Windows.Forms.Label
+$l.Text = {_ps_str(prompt)}; $l.SetBounds(14,14,420,44)
+$t = New-Object System.Windows.Forms.TextBox
+$t.UseSystemPasswordChar = $true; $t.SetBounds(14,62,420,26)
+$ok = New-Object System.Windows.Forms.Button
+$ok.Text='OK'; $ok.DialogResult=[System.Windows.Forms.DialogResult]::OK; $ok.SetBounds(260,104,80,30)
+$c = New-Object System.Windows.Forms.Button
+$c.Text='Cancel'; $c.DialogResult=[System.Windows.Forms.DialogResult]::Cancel; $c.SetBounds(350,104,80,30)
+$f.AcceptButton=$ok; $f.CancelButton=$c
+$f.Controls.AddRange(@($l,$t,$ok,$c))
+$f.Add_Shown({{ $f.Activate(); $t.Focus() }})
+if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ [Console]::Out.Write($t.Text) }} else {{ exit 2 }}
+"""
+    return _run_ps_capture(ps)
+
+
+def _gui_pick_folder(prompt: str):
+    # Native folder picker. Returns the selected path or None.
+    if os.name != "nt":
+        return None
+    ps = f"""
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = {_ps_str(prompt)}; $d.ShowNewFolderButton = $false
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ [Console]::Out.Write($d.SelectedPath) }} else {{ exit 2 }}
+"""
+    r = _run_ps_capture(ps)
+    return r.strip() if r else None
+
+
+def _read_passphrase(prompt: str, title: str = "AntiStall") -> str:
+    # ANTISTALL_RELEASE env (non-interactive human/CI) always wins.
     env = os.environ.get("ANTISTALL_RELEASE")
     if env:
         return env
-    try:
-        return getpass.getpass(prompt)
-    except Exception:
-        sys.stderr.write("(no hidden input available; reading from stdin)\n")
-        return sys.stdin.readline().rstrip("\n")
+    # On Windows ALWAYS prefer the masked GUI dialog — it works whether or not a console
+    # is attached, so a desktop/Cowork user is never dropped into a terminal getpass prompt
+    # (the bug: launching via a console made isatty() true and used the text prompt).
+    if os.name == "nt":
+        gui = _gui_password(title, prompt)
+        if gui is not None:
+            return gui
+    # Non-Windows, or GUI unavailable: hidden console input.
+    if getattr(sys.stdin, "isatty", lambda: False)():
+        try:
+            return getpass.getpass(prompt)
+        except Exception:
+            pass
+    return ""
 
 
 def _notify(msg: str) -> None:
@@ -151,27 +225,34 @@ def main(argv: list[str]) -> int:
     # ---- set-release-secret (human) -------------------------------------------------
     if cmd in ("set-release-secret", "set-secret"):
         if _secret_exists():
-            cur = _read_passphrase("Current release passphrase (required to change it): ")
+            cur = _read_passphrase("Enter your CURRENT release passphrase (required to change it):",
+                                   "AntiStall - change passphrase")
             if not _verify_secret(cur):
                 print("wrong current passphrase — refusing to change the release secret.",
                       file=sys.stderr)
                 return 4
-        p1 = _read_passphrase("New release passphrase: ")
-        p2 = _read_passphrase("Repeat new release passphrase: ")
-        if not p1 or p1 != p2:
-            print("passphrases empty or did not match — aborted.", file=sys.stderr)
+        p1 = _read_passphrase("Choose a NEW AntiStall release passphrase. Only you will know it; "
+                              "you will need it to stop a sprint.", "AntiStall - set passphrase")
+        if not p1:
+            print("no passphrase entered — aborted.", file=sys.stderr)
+            return 4
+        p2 = _read_passphrase("Re-enter the same passphrase to confirm:",
+                              "AntiStall - confirm passphrase")
+        if p1 != p2:
+            print("passphrases did not match — aborted. Run it again.", file=sys.stderr)
             return 4
         _store_secret(p1)
-        print(f"release secret stored ({SECRET_FILE}). Only this passphrase can now disarm "
-              "a sprint. Keep it where the agent cannot read it (your head / a password manager).")
+        print("release secret stored. Only this passphrase can disarm a sprint now — "
+              "the agent never saw what you typed.")
         return 0
 
     # ---- arm (agent or human) -------------------------------------------------------
     if cmd == "arm":
         if not _secret_exists():
             print("REFUSING TO ARM: no release secret is set, so the sprint could only be "
-                  "disarmed by the agent — which defeats the gate. A human must first run, in "
-                  "their own terminal:\n    python3 antistall.py set-release-secret",
+                  "disarmed by the agent — which defeats the gate. A human must set one first "
+                  "(it pops a password box; the agent never sees it): double-click "
+                  "Set-AntiStall-Secret.cmd, or run 'antistall.py set-release-secret'.",
                   file=sys.stderr)
             return 5
         FLAG.write_text(
@@ -181,8 +262,9 @@ def main(argv: list[str]) -> int:
         _clear_counts()
         who = f"session {SID[:8]}…" if SID else "project-wide"
         print(f"armed: sprint gate ACTIVE [{who}] — {detail or '(no note)'}\n"
-              "  DISARM IS HUMAN-ONLY: from this project run 'python3 antistall.py release' "
-              "(needs the release passphrase). The agent cannot turn this off.")
+              "  DISARM IS HUMAN-ONLY: double-click Release-Sprint.cmd (pops a password box), "
+              "or tell Claude to disarm and type your passphrase into the dialog. "
+              "The agent cannot turn this off.")
         return 0
 
     # ---- release (human only; the ONLY disarm) --------------------------------------
@@ -192,30 +274,48 @@ def main(argv: list[str]) -> int:
                   "set-release-secret. (Refusing to disarm without proof of human authority.)",
                   file=sys.stderr)
             return 5
-        if not _verify_secret(_read_passphrase("Release passphrase: ")):
+        # Resolve which project's gate to clear. Agent-triggered release has
+        # CLAUDE_PROJECT_DIR (or a project cwd); a context-less double-click pops a
+        # folder picker so the human chooses — no CLI/path typing needed.
+        env = os.environ.get("CLAUDE_PROJECT_DIR")
+        if env and (pathlib.Path(env) / ".claude").is_dir():
+            claude_dir = pathlib.Path(env) / ".claude"
+        elif (pathlib.Path.cwd() / ".claude").is_dir():
+            claude_dir = pathlib.Path.cwd() / ".claude"
+        else:
+            picked = _gui_pick_folder("Select the project folder whose AntiStall sprint to disarm")
+            claude_dir = (pathlib.Path(picked) / ".claude") if picked else None
+            if not claude_dir or not claude_dir.is_dir():
+                print("no project selected (or it has no .claude) — nothing disarmed.", file=sys.stderr)
+                return 5
+        if not _verify_secret(_read_passphrase("Enter your AntiStall release passphrase to STOP the sprint:",
+                                               "AntiStall - release / disarm")):
             print("WRONG passphrase — sprint NOT disarmed.", file=sys.stderr)
             return 6
-        all_flag = "--all" in argv or not SID
-        targets = list(CLAUDE.glob("sprint-gate*.json")) if all_flag else (
-            [FLAG] + ([CLAUDE / "sprint-gate.json"] if (CLAUDE / "sprint-gate.json").exists() else [])
-        )
+        # Clear this session's gate, or all gates in the project (--all, or when there's
+        # no session id — e.g. a human double-click disarming the whole project).
+        if "--all" in argv or not SID:
+            targets = list(claude_dir.glob("sprint-gate*.json"))
+        else:
+            targets = [claude_dir / f"sprint-gate-{_safe_sid(SID)}.json"]
+            if (claude_dir / "sprint-gate.json").exists():
+                targets.append(claude_dir / "sprint-gate.json")
         n = 0
         for t in targets:
             try:
-                t.unlink()
-                n += 1
+                t.unlink(); n += 1
             except Exception:
                 pass
-        for c in CLAUDE.glob(".antistall-block-count*"):
+        for c in claude_dir.glob(".antistall-block-count*"):
             try:
                 c.unlink()
             except Exception:
                 pass
         try:
-            (CLAUDE / "sprint-stop-request.json").unlink()
+            (claude_dir / "sprint-stop-request.json").unlink()
         except Exception:
             pass
-        print(f"RELEASED by human — disarmed {n} sprint-gate file(s) in {CLAUDE}.")
+        print(f"RELEASED by human — disarmed {n} sprint-gate file(s) in {claude_dir}.")
         return 0
 
     # ---- request (agent voice; notifies human, does NOT disarm) ----------------------
