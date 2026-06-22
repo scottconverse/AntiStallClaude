@@ -1,6 +1,16 @@
 # AntiStallClaude — Manual
 
-Version 0.1.1
+Version 0.3.0
+
+> **⚠️ v0.3.0 changed the disarm model — parts of this manual below are superseded.**
+> The agent can no longer stop or disarm a sprint: the `done`/`blocked`/`question`
+> stop-tickets are **removed** and the gate no longer honors any ticket. Disarming now
+> requires a **human release passphrase** (`set-release-secret` / `release`); the
+> Stop hook never clears the gate itself. User-level `~/.claude` hooks **do** fire in
+> current Cowork builds, so `install.py --global` works. Where sections below describe
+> ticket-based stops or "user hooks don't fire in Cowork", follow the
+> [README](../README.md) and [CHANGELOG](../CHANGELOG.md) instead — they are current.
+> A full manual rewrite is tracked as a follow-up.
 
 This manual covers the design, the internals, the operating protocol, the Cowork
 specifics, configuration, the behavioral test, and an FAQ. For a quick start see

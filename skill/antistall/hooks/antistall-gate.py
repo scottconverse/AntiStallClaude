@@ -61,12 +61,12 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import time
 from typing import NoReturn
 
 TAG = "[ANTI-STALL]"
-VALID_REASONS = {"DONE", "BLOCKED", "QUESTION"}
 
 
 def _int_env(name: str, default: int) -> int:
@@ -106,6 +106,36 @@ def _read_json(p: pathlib.Path):
         return None
 
 
+def _safe_sid(sid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80]
+
+
+def _session_id(payload: dict):
+    sid = payload.get("session_id")
+    return sid if isinstance(sid, str) and sid.strip() else None
+
+
+def _resolve_active_gate(claude_dir: pathlib.Path, sid):
+    # Returns (gate_path, ticket_path) for the active sprint that applies to THIS
+    # session, or (None, None) if none does. SESSION-SCOPED first
+    # (sprint-gate-<sid>.json), so two sessions in one project never gate each other.
+    # Then a legacy project-wide sprint-gate.json, honored only if it is unowned
+    # (pre-0.2.1 — applies to all sessions, preserving old behavior) or explicitly
+    # owned by this session ("owner": "<session_id>").
+    if sid:
+        gp = claude_dir / f"sprint-gate-{_safe_sid(sid)}.json"
+        g = _read_json(gp)
+        if isinstance(g, dict) and g.get("active"):
+            return gp, claude_dir / f"sprint-stop-ticket-{_safe_sid(sid)}.json"
+    legacy = _read_json(claude_dir / "sprint-gate.json")
+    if isinstance(legacy, dict) and legacy.get("active"):
+        owner = legacy.get("owner")
+        if owner is None or owner == sid:
+            return (claude_dir / "sprint-gate.json",
+                    claude_dir / "sprint-stop-ticket.json")
+    return None, None
+
+
 def _safe_unlink(p: pathlib.Path) -> None:
     try:
         p.unlink()
@@ -114,9 +144,37 @@ def _safe_unlink(p: pathlib.Path) -> None:
 
 
 def _allow(msg: str) -> NoReturn:
-    """Permit the stop: write a one-line stderr note and exit 0 (no block)."""
+    """Permit the stop: write a one-line stderr note and exit 0 (no block).
+
+    IMPORTANT: allowing a stop is NOT disarming. This function NEVER clears the
+    sprint-gate file — the gate stays ARMED and re-enforces on the next turn.
+    Only a human `release` (passphrase-verified) ever turns the switch off.
+    """
     sys.stderr.write(f"{TAG} {msg}\n")
     sys.exit(0)
+
+
+def _notify(msg: str) -> None:
+    # Best-effort desktop toast so a HUMAN is summoned to review — the gate never
+    # disarms itself, so this is how a paused/at-cap sprint reaches the operator.
+    if os.name != "nt":
+        return
+    try:
+        ps = (
+            "Add-Type -AssemblyName System.Windows.Forms;"
+            "Add-Type -AssemblyName System.Drawing;"
+            "$n=New-Object System.Windows.Forms.NotifyIcon;"
+            "$n.Icon=[System.Drawing.SystemIcons]::Warning;$n.Visible=$true;"
+            "$n.BalloonTipTitle='AntiStall';$n.BalloonTipText=$env:ANTISTALL_MSG;"
+            "$n.ShowBalloonTip(7000);Start-Sleep -Milliseconds 7500;$n.Dispose()"
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            env={**os.environ, "ANTISTALL_MSG": msg[:240]},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def main() -> None:
@@ -136,78 +194,60 @@ def main() -> None:
         payload = {}
 
     claude_dir = _claude_dir()
-    flag = _read_json(claude_dir / "sprint-gate.json")
-    if not (isinstance(flag, dict) and flag.get("active")):
-        sys.exit(0)  # no active sprint -> the gate is silent
+    sid = _session_id(payload)
+    gate_path, ticket_path = _resolve_active_gate(claude_dir, sid)
+    if gate_path is None:
+        sys.exit(0)  # no active sprint for this session -> the gate is silent
 
-    cap = _int_env("ANTISTALL_BLOCK_CAP", 6)
-    max_age = _int_env("ANTISTALL_TICKET_MAX_AGE_S", 300)
+    # cap = consecutive Stop-hook blocks after which we PAUSE (allow this one stop) so a
+    # runaway / genuinely-stuck agent can't burn tokens forever. A pause NEVER disarms —
+    # the gate stays armed and re-enforces next turn; only a human `release` turns it off.
+    # ANTISTALL_BLOCK_CAP=0 disables the pause entirely (hold until a human releases).
+    cap = _int_env("ANTISTALL_BLOCK_CAP", 25)
     count_path = _count_path(claude_dir, payload)
-    ticket_path = claude_dir / "sprint-stop-ticket.json"
 
-    # (1) PRIMARY LOOP GUARD — never block a stop that is itself the product of a
-    # prior Stop-hook block. Race-proof: depends on no shared mutable state. Also
-    # consume any pending ticket here so it can't be re-used on a later stop.
-    if payload.get("stop_hook_active"):
-        _safe_unlink(ticket_path)
-        _safe_unlink(count_path)
-        _allow(
-            "stop ALLOWED (loop guard: stop_hook_active). The gate nudges a "
-            "drift-stop at most once per continuation chain; it never loops."
-        )
+    # NOTE: there is intentionally NO agent stop path here. v0.2.x honored a DONE/BLOCKED/
+    # QUESTION ticket written by the agent (and `done` cleared the gate), which let the
+    # agent disarm itself and quit early. That is removed: the agent cannot end a sprint.
+    # The ONLY exits are (a) a human `release` (passphrase) and (b) the token-burn pause
+    # below — and neither (a)'s agent-side nor (b) ever clears the gate except `release`.
 
-    # Single-use ticket: consume whether or not it is valid; honor it if fresh.
-    # `0 <= age` rejects a future-dated ts (clock skew / hand-edited ticket).
-    ticket = _read_json(ticket_path)
-    if isinstance(ticket, dict):
-        _safe_unlink(ticket_path)
-        reason = str(ticket.get("reason", "")).upper()
-        try:
-            age = time.time() - float(ticket.get("ts", 0))
-        except Exception:
-            age = 1e9
-        if reason in VALID_REASONS and 0 <= age < max_age:
-            _safe_unlink(count_path)
-            _allow(f"stop ALLOWED: {reason} — {ticket.get('detail', '')}")
-
-    # (2) SECONDARY LOOP GUARD — per-session consecutive-block counter that FAILS
-    # OPEN. Any uncertainty about the counter allows the stop; it must never cause
-    # a loop. A missing file is a clean 0; an empty/whitespace file strips to ""
-    # and trips the corrupt branch below (int("") raises) — also fail-open.
+    # Per-session consecutive-block counter. Every fail-open path here yields at most a
+    # PAUSE (the gate is never cleared), so failing open can never turn the switch off.
     try:
         current = count_path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         current = "0"
     except Exception:
-        # Can't read it -> can't prove we haven't already looped -> allow.
-        _allow("stop ALLOWED (loop guard: block-counter unreadable; failing open).")
+        _allow("stop PAUSED (counter unreadable). Sprint STILL ARMED — re-enforces next turn.")
     try:
         n = int(current) + 1
     except Exception:
-        # Empty / corrupt counter (e.g. a partial concurrent write) -> allow + reset.
         _safe_unlink(count_path)
-        _allow("stop ALLOWED (loop guard: block-counter corrupt; failing open).")
-    if n >= cap:
-        _safe_unlink(count_path)
+        _allow("stop PAUSED (counter corrupt; reset). Sprint STILL ARMED — re-enforces next turn.")
+    if cap > 0 and n >= cap:
+        _safe_unlink(count_path)  # reset the counter only; the gate file is left ARMED
+        _notify(f"AntiStall: paused at block cap ({cap}); sprint STILL ARMED. Review and "
+                "'release' if it's truly done, or it keeps enforcing.")
         _allow(
-            f"anti-loop cap ({cap}) reached — allowing the stop. Investigate why no "
-            f"DONE/BLOCKED/QUESTION ticket was written for {cap} turns; the sprint flag "
-            f"may be stale (clear .claude/sprint-gate.json)."
+            f"token-burn cap ({cap}) reached — PAUSING this stop, but the sprint is STILL "
+            f"ARMED ({gate_path}). A human was notified. It re-enforces next turn; only "
+            f"'python3 antistall.py release' (human passphrase) ends it."
         )
     try:
         count_path.write_text(str(n), encoding="utf-8")
     except Exception:
-        # Can't persist progress -> the next read can't advance -> would loop. Allow.
-        _allow("stop ALLOWED (loop guard: cannot persist block-counter; failing open).")
+        _allow("stop PAUSED (cannot persist counter). Sprint STILL ARMED — re-enforces next turn.")
 
     reason_msg = (
-        f"{TAG} A sprint is ACTIVE and you are ending the turn with no valid stop-ticket. "
-        f"KEEP WORKING — finish the next concrete step. To stop legitimately, write "
-        f'{claude_dir}/sprint-stop-ticket.json as '
-        f'{{"reason":"DONE|BLOCKED|QUESTION","detail":"<why>","ts":<epoch seconds>}} and THEN '
-        f"end the turn (DONE = whole queue done + clear sprint-gate.json; BLOCKED = a decision "
-        f"only the human can make halts ALL remaining work; QUESTION = you asked the human and "
-        f"need the answer). Block {n}/{cap}."
+        f"{TAG} A sprint is ACTIVE — you may NOT end the turn. KEEP WORKING: finish the next "
+        f"concrete step, then the next, until the whole queue is genuinely complete. You CANNOT "
+        f"stop or disarm this yourself — there is no DONE/ticket you can write; only a human, "
+        f"with the release passphrase, can end it via 'python3 antistall.py release'. Do NOT "
+        f"declare the work done to escape — finish it. If you are truly blocked on a human-only "
+        f"decision, run 'python3 antistall.py request \"<why>\"' to notify the operator, then "
+        f"KEEP WORKING on anything else still buildable. Block {n}"
+        + (f"/{cap}" if cap > 0 else " (no cap; held until human release)") + "."
     )
     print(json.dumps({"decision": "block", "reason": reason_msg}))
     sys.exit(0)

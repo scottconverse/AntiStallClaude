@@ -4,6 +4,37 @@ All notable changes to AntiStallClaude are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-06-21
+
+### Changed (BREAKING) — human-only disarm
+- **The agent can no longer stop or disarm a sprint. Closing the self-exit hole.**
+  In v0.2.x an agent could write a `DONE` ticket which both allowed the stop AND cleared
+  `sprint-gate.json` — i.e. the agent it polices held the off switch, and could declare a
+  project "done" to quit early (observed: a sprint marked done with 100+ tests and many
+  required features unbuilt). Now:
+  - **`done` / `blocked` / `question` are removed.** The gate no longer reads or honors any
+    stop-ticket. There is no agent-usable command that ends a sprint.
+  - **Disarm requires a human release passphrase**, stored only as a salted PBKDF2-SHA256
+    hash (`~/.claude/antistall-release.hash`) — never plaintext, never in the agent's
+    context. `release` verifies it; `set-release-secret` sets it (changing it requires the
+    current one). `arm` refuses unless a release secret exists.
+  - **The Stop hook never clears the gate file** — only a verified human `release` does. Every
+    loop-safety fail-open path now yields at most a *pause*, never a disarm.
+  - **`stop_hook_active` no longer grants a free stop.** Enforcement is bounded instead by a
+    consecutive-block cap (`ANTISTALL_BLOCK_CAP`, default **25**, `0` = hold until release);
+    at the cap the gate PAUSES one stop **without disarming** and fires a desktop
+    notification so a human is summoned. The sprint stays armed and re-enforces next turn.
+  - New **`request "<why>"`**: the agent's only voice — records a note and notifies the
+    human; it does NOT disarm.
+- SessionStart reminder and README rewritten for the new model; `tests/test_gate.py` rewritten
+  to assert tickets are ignored, the agent cannot disarm, and only a human passphrase releases.
+
+### Security note
+- This removes every *sanctioned* self-exit; a drift-prone agent has no way to quit a sprint.
+  It is not a sandbox — an agent with full filesystem/admin rights could still delete the
+  gate/secret files (flagrant tampering, out of scope for a userspace hook). For OS-hard
+  enforcement, ACL-lock those files so the agent's normal token cannot write them.
+
 ## [0.2.1] — 2026-06-21
 
 ### Fixed

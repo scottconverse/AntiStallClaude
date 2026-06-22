@@ -144,12 +144,14 @@ def main(argv: list[str]) -> int:
     print(
         "\nDone. Next:\n"
         "  1. RESTART the Code tab / Claude Code (hooks load at session start).\n"
-        "  2. Arm a sprint when you start autonomous work (run from the project root\n"
-        "     so it targets that project's state):\n"
+        "  2. SET YOUR RELEASE SECRET — do this yourself, in your OWN terminal, NOT through\n"
+        "     the agent (so the agent never sees it). Required before any sprint can be armed:\n"
+        f"       python3 {arm_path} set-release-secret\n"
+        "  3. Arm a sprint when you start autonomous work (from the project root):\n"
         f"       python3 {arm_path} arm \"<the sprint goal>\"\n"
-        "  3. To stop legitimately, write a ticket:\n"
-        f"       python3 {arm_path} done|blocked|question \"<why>\"\n"
-        "  4. Verify the gate fires (see docs/MANUAL.md \"Behavioral test\")."
+        "  4. The agent CANNOT stop or disarm. To end a sprint, YOU run (with the passphrase):\n"
+        f"       python3 {arm_path} release\n"
+        "  5. Verify the gate fires (see docs/MANUAL.md \"Behavioral test\")."
     )
     if os.name == "nt":
         print(

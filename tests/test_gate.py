@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Self-contained test of the anti-stall Stop hook — no harness needed.
+"""Self-contained test of the anti-stall gate + CLI authority model (v0.3.0).
 
-Spawns the real hooks/antistall-gate.py as a subprocess (exactly as the harness
-would) against a throwaway project dir, and asserts each behavior.
+Spawns the real hooks/antistall-gate.py and hooks/antistall.py as subprocesses
+(exactly as the harness / a human would) against throwaway dirs, and asserts the
+v0.3.0 guarantees — most importantly that the AGENT can never stop or disarm a
+sprint, and only a human passphrase (`release`) turns it off.
 
 Run: python3 tests/test_gate.py   (exit 0 = pass)
 """
@@ -18,170 +20,182 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GATE = ROOT / "hooks" / "antistall-gate.py"
+CLI = ROOT / "hooks" / "antistall.py"
 SKILL_GATE = ROOT / "skill" / "antistall" / "hooks" / "antistall-gate.py"
+SKILL_CLI = ROOT / "skill" / "antistall" / "hooks" / "antistall.py"
 WRAPPER = ROOT / "hooks" / "antistall-gate.sh"
 
 
-def run_gate(project_dir: pathlib.Path, payload: str = "{}", env_extra: dict | None = None,
-             gate: pathlib.Path | None = None, set_project_dir: bool = True):
+def run_gate(project_dir, payload="{}", env_extra=None, gate=None, set_project_dir=True):
     env = dict(os.environ)
     if set_project_dir:
         env["CLAUDE_PROJECT_DIR"] = str(project_dir)
     else:
         env.pop("CLAUDE_PROJECT_DIR", None)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
     if env_extra:
         env.update(env_extra)
-    p = subprocess.run(
-        [sys.executable, str(gate or GATE)], input=payload, text=True, capture_output=True, env=env,
-    )
+    p = subprocess.run([sys.executable, str(gate or GATE)], input=payload,
+                       text=True, capture_output=True, env=env)
     return p.returncode, p.stdout, p.stderr
 
 
-def is_block(stdout: str) -> bool:
+def run_cli(args, project_dir, cfg_dir, sid=None, env_extra=None):
+    env = dict(os.environ)
+    env["CLAUDE_PROJECT_DIR"] = str(project_dir)
+    env["CLAUDE_CONFIG_DIR"] = str(cfg_dir)
+    if sid:
+        env["CLAUDE_CODE_SESSION_ID"] = sid
+    else:
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+    if env_extra:
+        env.update(env_extra)
+    p = subprocess.run([sys.executable, str(CLI), *args], input="",
+                       text=True, capture_output=True, env=env)
+    return p.returncode, p.stdout, p.stderr
+
+
+def is_block(stdout):
     return '"decision": "block"' in stdout
 
 
 def main() -> int:
     failures: list[str] = []
 
-    def expect(name: str, cond: bool, detail: str = ""):
+    def expect(name, cond, detail=""):
         if not cond:
             failures.append(f"{name}: {detail}")
 
+    # ============================ GATE behavior ============================
     with tempfile.TemporaryDirectory() as td:
         proj = pathlib.Path(td)
         claude = proj / ".claude"
         claude.mkdir()
         flag = claude / "sprint-gate.json"
         ticket = claude / "sprint-stop-ticket.json"
-        count = claude / ".antistall-block-count"  # base name (payload has no session_id)
+        count = claude / ".antistall-block-count"
 
-        # A — sprint NOT armed -> silent allow
+        # A — not armed -> silent allow
         rc, out, _ = run_gate(proj)
         expect("A (not armed, silent)", rc == 0 and out.strip() == "", f"rc={rc} out={out!r}")
 
-        # B — armed + no ticket -> block, and the counter is persisted to exactly 1
-        flag.write_text(json.dumps({"active": True, "note": "test"}), encoding="utf-8")
+        # B — armed + no ticket -> block, counter == 1
+        flag.write_text(json.dumps({"active": True, "note": "t", "owner": None}), encoding="utf-8")
         rc, out, _ = run_gate(proj)
-        expect("B (armed, no ticket -> block)", rc == 0 and is_block(out), f"rc={rc} out={out!r}")
-        expect("B (counter written)", count.exists(), "counter file missing after a block")
-        if count.exists():
-            expect("B (counter == 1)", count.read_text().strip() == "1", f"{count.read_text()!r}")
+        expect("B (armed -> block)", rc == 0 and is_block(out), f"rc={rc} out={out!r}")
+        expect("B (counter==1)", count.exists() and count.read_text().strip() == "1", "counter wrong")
         count.unlink(missing_ok=True)
 
-        # C / C3 / C4 — fresh DONE/BLOCKED/QUESTION ticket -> allow + consume + reset
+        # C — THE FIX: an agent-written DONE/BLOCKED/QUESTION ticket is IGNORED. The
+        # gate still blocks AND never clears the gate file (stays armed).
         for reason in ("DONE", "BLOCKED", "QUESTION"):
-            count.write_text("2", encoding="utf-8")
-            ticket.write_text(json.dumps({"reason": reason, "detail": "x", "ts": time.time()}), encoding="utf-8")
-            rc, out, err = run_gate(proj)
-            expect(f"C-{reason} (allow+consume)",
-                   rc == 0 and out.strip() == "" and not ticket.exists() and "ALLOWED" in err,
-                   f"rc={rc} out={out!r} err={err!r} ticket={ticket.exists()}")
-            expect(f"C-{reason} (counter reset)", not count.exists(), "counter not reset on valid ticket")
+            ticket.write_text(json.dumps({"reason": reason, "detail": "x", "ts": 9e9}), encoding="utf-8")
+            _, out, _ = run_gate(proj)
+            expect(f"C-{reason} (ticket ignored -> still block)", is_block(out), f"out={out!r}")
+            expect(f"C-{reason} (gate stays armed)", flag.exists(), "gate file vanished")
+            count.unlink(missing_ok=True)
+        ticket.unlink(missing_ok=True)
 
-        # C2 — a STALE ticket is ignored (still blocks) and is consumed on sight
-        ticket.write_text(json.dumps({"reason": "DONE", "detail": "x", "ts": time.time() - 9999}), encoding="utf-8")
-        _, out, _ = run_gate(proj, env_extra={"ANTISTALL_TICKET_MAX_AGE_S": "300"})
-        expect("C2 (stale ticket -> block)", is_block(out), f"out={out!r}")
-        expect("C2 (stale ticket consumed)", not ticket.exists(), "stale ticket not consumed")
-        count.unlink(missing_ok=True)
-
-        # C5 — a FUTURE-dated ticket (negative age) is treated as stale, not fresh
-        ticket.write_text(json.dumps({"reason": "DONE", "detail": "x", "ts": time.time() + 9999}), encoding="utf-8")
-        _, out, _ = run_gate(proj)
-        expect("C5 (future-dated ticket -> block)", is_block(out), f"out={out!r}")
-        count.unlink(missing_ok=True)
-
-        # D — anti-loop cap escapes after CAP consecutive blocks
-        count.unlink(missing_ok=True)
-        last_err = ""
-        for _ in range(3):
-            _, _, last_err = run_gate(proj, env_extra={"ANTISTALL_BLOCK_CAP": "3"})
-        expect("D (anti-loop escape at cap)", "anti-loop cap" in last_err, f"err={last_err!r}")
-
-        # E — LOOP GUARD: stop_hook_active=true ALWAYS allows, even armed + no
-        # ticket + a stuck non-zero counter (the exact state that looped before),
-        # and it consumes any lingering ticket.
+        # E — THE FIX: stop_hook_active=true must STILL block (no 1-nudge escape).
         count.write_text("1", encoding="utf-8")
-        ticket.write_text(json.dumps({"reason": "DONE", "detail": "x", "ts": time.time()}), encoding="utf-8")
-        rc, out, err = run_gate(proj, payload=json.dumps({"stop_hook_active": True}))
-        expect("E (stop_hook_active -> allow)",
-               rc == 0 and out.strip() == "" and "loop guard" in err.lower(), f"rc={rc} out={out!r} err={err!r}")
-        expect("E (lingering ticket consumed)", not ticket.exists(), "ticket survived loop-guard allow")
+        rc, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": True}))
+        expect("E (stop_hook_active still blocks)", is_block(out), f"rc={rc} out={out!r}")
         count.unlink(missing_ok=True)
 
-        # F — FAIL OPEN: a corrupt counter allows the stop, never blocks.
+        # D/H — token-burn cap PAUSES (allow) but NEVER disarms. CAP=3: n=1 block,
+        # n=2 block, n=3 -> pause(allow). Gate file remains after the pause.
+        count.unlink(missing_ok=True)
+        outs = []
+        for _ in range(3):
+            _, o, e = run_gate(proj, env_extra={"ANTISTALL_BLOCK_CAP": "3"})
+            outs.append((o, e))
+        expect("D (blocks before cap)", is_block(outs[0][0]) and is_block(outs[1][0]), f"{outs}")
+        expect("D (pause at cap)", outs[2][0].strip() == "" and "cap" in outs[2][1].lower(), f"{outs[2]}")
+        expect("D (STILL ARMED after pause)", flag.exists(), "cap pause must NOT disarm")
+        count.unlink(missing_ok=True)
+
+        # D0 — CAP=0 means never auto-pause: many consecutive blocks, all block.
+        allblock = all(is_block(run_gate(proj, env_extra={"ANTISTALL_BLOCK_CAP": "0"})[1])
+                       for _ in range(5))
+        expect("D0 (cap=0 never pauses)", allblock, "cap=0 should block forever")
+        count.unlink(missing_ok=True)
+
+        # F — fail-open paths yield at most a PAUSE; the gate is NEVER cleared.
         count.write_text("not-a-number", encoding="utf-8")
-        rc, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": False}))
-        expect("F (corrupt counter -> fail open)", rc == 0 and out.strip() == "", f"rc={rc} out={out!r}")
+        rc, out, _ = run_gate(proj)
+        expect("F (corrupt counter -> pause)", rc == 0 and out.strip() == "", f"out={out!r}")
+        expect("F (still armed)", flag.exists(), "fail-open must not disarm")
         count.unlink(missing_ok=True)
-
-        # F2 — FAIL OPEN: an EMPTY counter file also allows (strips to "" -> int raises).
-        count.write_text("   ", encoding="utf-8")
-        rc, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": False}))
-        expect("F2 (empty counter -> fail open)", rc == 0 and out.strip() == "", f"rc={rc} out={out!r}")
-        count.unlink(missing_ok=True)
-
-        # F3 — FAIL OPEN: an UNREADABLE counter (a directory in its place) allows.
         count.mkdir()
-        rc, out, err = run_gate(proj, payload=json.dumps({"stop_hook_active": False}))
-        expect("F3 (unreadable counter -> fail open)",
-               rc == 0 and out.strip() == "" and "failing open" in err.lower(), f"rc={rc} out={out!r} err={err!r}")
+        rc, out, err = run_gate(proj)
+        expect("F3 (unreadable counter -> pause)", rc == 0 and out.strip() == "" and flag.exists(),
+               f"out={out!r} err={err!r}")
         count.rmdir()
 
-        # F4 — FAIL OPEN: an UNWRITABLE counter (read-only file) allows. The read
-        # returns "0", n becomes 1, the write fails, and the gate must still allow.
-        count.write_text("0", encoding="utf-8")
-        os.chmod(count, stat.S_IREAD)
-        rc, out, err = run_gate(proj, payload=json.dumps({"stop_hook_active": False}))
-        expect("F4 (unwritable counter -> fail open)",
-               rc == 0 and out.strip() == "" and "failing open" in err.lower(), f"rc={rc} out={out!r} err={err!r}")
-        os.chmod(count, stat.S_IWRITE | stat.S_IREAD)
-        count.unlink(missing_ok=True)
+        # I — per-session isolation: session-scoped gate + counter.
+        flag.unlink(missing_ok=True)  # clear the project-wide gate from earlier sections
+        sflag = claude / "sprint-gate-sessAAA.json"
+        sflag.write_text(json.dumps({"active": True, "owner": "sessAAA"}), encoding="utf-8")
+        _, outA, _ = run_gate(proj, payload=json.dumps({"session_id": "sessAAA"}))
+        _, outB, _ = run_gate(proj, payload=json.dumps({"session_id": "sessBBB"}))
+        expect("I (armed session blocks)", is_block(outA), f"A out={outA!r}")
+        expect("I (other session silent)", outB.strip() == "", f"B out={outB!r}")
+        expect("I (per-session counter)", (claude / ".antistall-block-count-sessAAA").exists(),
+               "session counter missing")
+        sflag.unlink(missing_ok=True)
+        for p in claude.glob(".antistall-block-count*"):
+            p.unlink()
 
-        # G — BOUNDEDNESS: simulate the real harness auto-continue loop. The first
-        # stop is blocked; the harness then continues *because of* that block, so the
-        # next Stop carries stop_hook_active=true and MUST be allowed. Terminates in
-        # at most one block. If this ever blocks twice, the token loop has regressed.
-        count.unlink(missing_ok=True)
-        ticket.unlink(missing_ok=True)
-        blocks, sha = 0, False
-        for _ in range(50):
-            _, out, _ = run_gate(proj, payload=json.dumps({"stop_hook_active": sha}))
-            if is_block(out):
-                blocks += 1
-                sha = True
-            else:
-                break
-        expect("G (autonomous loop <=1 block)", blocks <= 1, f"blocked {blocks}x")
+        # J — owner gating on a legacy project-wide gate: only the owner is blocked.
+        flag.write_text(json.dumps({"active": True, "owner": "sessOWNER"}), encoding="utf-8")
+        _, outOwner, _ = run_gate(proj, payload=json.dumps({"session_id": "sessOWNER"}))
+        _, outOther, _ = run_gate(proj, payload=json.dumps({"session_id": "sessX"}))
+        expect("J (owner blocked)", is_block(outOwner), f"out={outOwner!r}")
+        expect("J (non-owner silent)", outOther.strip() == "", f"out={outOther!r}")
+        flag.unlink(missing_ok=True)
+        for p in claude.glob(".antistall-block-count*"):
+            p.unlink()
 
-        # H — CAP BOUNDARY pinned exactly: with CAP=3, count 1->block(n=2), count 2->allow(n=3).
-        count.write_text("1", encoding="utf-8")
-        _, out, _ = run_gate(proj, env_extra={"ANTISTALL_BLOCK_CAP": "3"})
-        expect("H (below cap -> block)", is_block(out), f"out={out!r}")
-        count.write_text("2", encoding="utf-8")
-        _, out, _ = run_gate(proj, env_extra={"ANTISTALL_BLOCK_CAP": "3"})
-        expect("H (at cap -> allow)", out.strip() == "", f"out={out!r}")
-        count.unlink(missing_ok=True)
+    # ============================ CLI authority ============================
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cfgd:
+        proj = pathlib.Path(td)
+        (proj / ".claude").mkdir()
+        cfg = pathlib.Path(cfgd)
+        sid = "sessCLI"
+        gatef = proj / ".claude" / f"sprint-gate-{sid}.json"
 
-        # I — PER-SESSION ISOLATION: two distinct session_ids get distinct counter
-        # files, so the cross-agent race is structurally impossible (no shared file).
-        run_gate(proj, payload=json.dumps({"session_id": "sessAAA"}))
-        run_gate(proj, payload=json.dumps({"session_id": "sessBBB"}))
-        ca = claude / ".antistall-block-count-sessAAA"
-        cb = claude / ".antistall-block-count-sessBBB"
-        expect("I (per-session counter A)", ca.exists() and ca.read_text().strip() == "1", "A counter wrong")
-        expect("I (per-session counter B)", cb.exists() and cb.read_text().strip() == "1", "B counter wrong")
-        expect("I (no shared base file)", not count.exists(), "base counter unexpectedly written")
-        ca.unlink(missing_ok=True)
-        cb.unlink(missing_ok=True)
+        # K1 — arm REFUSED when no release secret exists.
+        rc, _, err = run_cli(["arm", "goal"], proj, cfg, sid=sid)
+        expect("K1 (arm refused w/o secret)", rc == 5 and not gatef.exists(), f"rc={rc} err={err!r}")
 
-    # M — CLAUDE_PROJECT_DIR UNSET: the self-locating fallback (parents[1]) must
-    # still find the sprint flag and BLOCK when the gate sits at <proj>/.claude/hooks/.
+        # K2 — set release secret (non-interactive via env), then arm succeeds.
+        rc, _, _ = run_cli(["set-release-secret"], proj, cfg, sid=sid, env_extra={"ANTISTALL_RELEASE": "s3cret"})
+        expect("K2 (secret set)", rc == 0 and (cfg / "antistall-release.hash").exists(), f"rc={rc}")
+        rc, _, _ = run_cli(["arm", "build all"], proj, cfg, sid=sid)
+        expect("K2 (arm ok)", rc == 0 and gatef.exists(), f"rc={rc}")
+
+        # K3 — agent 'done'/'blocked'/'question' are REMOVED: error, gate intact.
+        for c in ("done", "blocked", "question"):
+            rc, _, err = run_cli([c, "x"], proj, cfg, sid=sid)
+            expect(f"K3 ({c} refused)", rc == 7 and gatef.exists(), f"rc={rc} armed={gatef.exists()}")
+
+        # K4 — release with WRONG passphrase: refused, gate intact.
+        rc, _, _ = run_cli(["release"], proj, cfg, sid=sid, env_extra={"ANTISTALL_RELEASE": "wrong"})
+        expect("K4 (wrong pass refused)", rc == 6 and gatef.exists(), f"rc={rc} armed={gatef.exists()}")
+
+        # K5 — request: notifies, does NOT disarm.
+        rc, _, _ = run_cli(["request", "stuck"], proj, cfg, sid=sid)
+        expect("K5 (request keeps armed)", rc == 0 and gatef.exists(), f"rc={rc} armed={gatef.exists()}")
+
+        # K6 — release with RIGHT passphrase: the ONLY disarm.
+        rc, _, _ = run_cli(["release"], proj, cfg, sid=sid, env_extra={"ANTISTALL_RELEASE": "s3cret"})
+        expect("K6 (correct pass disarms)", rc == 0 and not gatef.exists(), f"rc={rc} armed={gatef.exists()}")
+
+    # ============================ packaging / fallback ============================
+    # M — CLAUDE_PROJECT_DIR unset: self-locating fallback still blocks.
     with tempfile.TemporaryDirectory() as td2:
         proj2 = pathlib.Path(td2)
         hooks2 = proj2 / ".claude" / "hooks"
@@ -190,22 +204,24 @@ def main() -> int:
         shutil.copyfile(GATE, gate2)
         (proj2 / ".claude" / "sprint-gate.json").write_text(json.dumps({"active": True}), encoding="utf-8")
         rc, out, _ = run_gate(proj2, gate=gate2, set_project_dir=False)
-        expect("M (env-unset fallback still blocks)", rc == 0 and is_block(out), f"rc={rc} out={out!r}")
+        expect("M (env-unset fallback blocks)", rc == 0 and is_block(out), f"rc={rc} out={out!r}")
 
-    # N — the two shipped repo copies must be byte-identical.
-    expect("N (repo copies byte-identical)", GATE.read_bytes() == SKILL_GATE.read_bytes(),
-           "hooks/ and skill/antistall/hooks/ copies differ")
+    # N — shipped repo copies must be byte-identical.
+    expect("N (gate copies identical)", GATE.read_bytes() == SKILL_GATE.read_bytes(),
+           "hooks/ and skill/antistall/hooks/ antistall-gate.py differ")
+    expect("N (cli copies identical)", CLI.read_bytes() == SKILL_CLI.read_bytes(),
+           "hooks/ and skill/antistall/hooks/ antistall.py differ")
 
-    # O — .sh wrapper smoke (skips cleanly when bash or python3 are unavailable).
+    # O — .sh wrapper smoke.
     bash = shutil.which("bash")
-    py3 = shutil.which("python3")
-    if bash and py3 and WRAPPER.exists():
+    if bash and shutil.which("python3") and WRAPPER.exists():
         with tempfile.TemporaryDirectory() as td3:
             proj3 = pathlib.Path(td3)
             (proj3 / ".claude").mkdir()
             env = dict(os.environ, CLAUDE_PROJECT_DIR=str(proj3))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
             p = subprocess.run([bash, str(WRAPPER)], input="{}", text=True, capture_output=True, env=env)
-            expect("O (.sh wrapper not-armed -> silent allow)",
+            expect("O (.sh wrapper silent when unarmed)",
                    p.returncode == 0 and p.stdout.strip() == "", f"rc={p.returncode} out={p.stdout!r}")
     else:
         print("  (skipped O: bash/python3 wrapper smoke — not available here)")
@@ -215,11 +231,10 @@ def main() -> int:
         for f in failures:
             print("  -", f)
         return 1
-    print(
-        "OK: anti-stall gate — silent / block / allow+consume / stale / future-dated / anti-loop cap / "
-        "cap-boundary / stop_hook_active loop-guard / fail-open (corrupt/empty/unreadable/unwritable) / "
-        "bounded-loop / per-session isolation / env-unset fallback / copy-identity / wrapper-smoke all pass"
-    )
+    print("OK (v0.3.0): not-armed-silent / armed-blocks / TICKETS-IGNORED / stop_hook_active-still-blocks / "
+          "cap-pauses-but-stays-armed / cap=0-holds / fail-open-never-disarms / per-session / owner-gating / "
+          "arm-needs-secret / agent-cannot-disarm / wrong-pass-refused / human-release-only / fallback / "
+          "copy-identity / wrapper-smoke — all pass")
     return 0
 
 

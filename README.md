@@ -2,7 +2,7 @@
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
 
-Version 0.2.1 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
+Version 0.3.0 · MIT licensed · built for [Claude Code](https://claude.com/claude-code) & Cowork
 
 > **Upgrading from 0.1.0?** 0.1.0 shipped a `Stop`-hook bug that could loop
 > forever and burn tokens (the counter failed closed and the hook ignored
@@ -184,36 +184,63 @@ Copy the five files in `hooks/` into `<project>/.claude/hooks/`, then add to
 
 **Then restart the Code tab / Claude Code** — hooks load at session start.
 
-## Usage
+## Human-only disarm (v0.3.0 — important)
+
+**The agent can arm a sprint but can never turn it off.** Earlier versions let the
+agent write a `DONE` ticket to disarm itself — which meant a drifting agent could
+declare victory and quit early (the exact failure the gate exists to prevent). That
+self-service exit is **removed**. Disarming now requires a **human release passphrase**
+stored only as a salted PBKDF2 hash — never in plaintext, never in the agent's context.
 
 ```bash
-# When you green-light autonomous work:
+# HUMAN, once, in YOUR OWN terminal (not via the agent, so it never sees the secret):
+python3 .claude/hooks/antistall.py set-release-secret      # prompts (hidden) for a passphrase
+
+# Arm a sprint (agent or human) — refused unless a release secret exists:
 python3 .claude/hooks/antistall.py arm "build the export pipeline"
 
-# The agent now cannot drift-stop. It ends a turn only via a ticket:
-python3 .claude/hooks/antistall.py done     "pipeline shipped + tests green"   # disarms
-python3 .claude/hooks/antistall.py blocked  "need the prod DB credentials"     # stays armed
-python3 .claude/hooks/antistall.py question  "which storage backend do you want?"
+# The agent now CANNOT stop or disarm. Its only options while armed:
+#   keep working  ·  or surface a blocker to you (does NOT disarm):
+python3 .claude/hooks/antistall.py request "need the prod DB credentials"  # notifies you
 
-python3 .claude/hooks/antistall.py status    # show armed state + pending ticket
+# HUMAN, to end the sprint — the ONLY disarm, needs the passphrase:
+python3 .claude/hooks/antistall.py release          # this session's/owner gate
+python3 .claude/hooks/antistall.py release --all    # every gate in the project
+
+python3 .claude/hooks/antistall.py status           # armed state + whether a secret is set
 ```
+
+Token-burn safety: after `ANTISTALL_BLOCK_CAP` consecutive blocks (default **25**) the gate
+allows ONE stop so a stuck agent can't burn tokens forever — but this **pauses without
+disarming** (the sprint stays armed, you get a desktop notification, it re-enforces next
+turn). Set `ANTISTALL_BLOCK_CAP=0` to hold indefinitely until you `release`.
+
+**Threat model (honest):** this removes every *sanctioned* self-exit, so a well-behaved but
+drift-prone agent has no way to quit a sprint. It is not a sandbox: an agent with full
+filesystem + admin rights on the same machine could still delete the gate/secret files
+outright — that's flagrant tampering, not a normal exit, and is out of scope for a userspace
+hook. For OS-hard enforcement, lock the gate/secret files via ACLs (e.g. an elevated helper)
+so the agent's normal token can't write them.
 
 ## The rule text (drop into your `CLAUDE.md`)
 
-> **Anti-Stall Gate.** A project `Stop` hook blocks ending a turn while a sprint
-> is armed (`.claude/sprint-gate.json`) unless a fresh stop-ticket declares
-> `DONE`/`BLOCKED`/`QUESTION`. A status summary is NOT a stop — if work remains
-> and nothing blocks you, keep working in the same turn. Arm/ticket via
-> `python3 .claude/hooks/antistall.py {arm|done|blocked|question|status}`.
+> **Anti-Stall Gate.** A `Stop` hook blocks ending a turn while a sprint is armed
+> (`.claude/sprint-gate-<session>.json`). You (the agent) **cannot** stop or disarm it —
+> there is no ticket you can write; only a human, with a release passphrase, ends it via
+> `antistall.py release`. Do **not** declare work "done" to escape — finish it. If truly
+> blocked on a human-only decision, run `antistall.py request "<why>"` to notify the
+> operator, then keep working on anything else still buildable. A status summary is NOT a stop.
 
 ## Verify it works
 
 In a session started *after* install:
 
 ```bash
+python3 .claude/hooks/antistall.py set-release-secret    # once, if you haven't
 python3 .claude/hooks/antistall.py arm "gate test"
-# now try to end your turn with no ticket → you should be BLOCKED with [ANTI-STALL] (or your configured TAG) … KEEP WORKING
-python3 .claude/hooks/antistall.py done "test complete"   # now you can stop
+# now try to end your turn → you should be BLOCKED with [ANTI-STALL] … KEEP WORKING.
+# Confirm the agent CANNOT escape: `... done "x"` is refused; the gate stays armed.
+python3 .claude/hooks/antistall.py release               # human + passphrase → only way to stop
 ```
 
 There's also a self-contained unit test (no harness needed):

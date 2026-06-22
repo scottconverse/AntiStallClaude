@@ -1,6 +1,7 @@
 {
   "//": "Example PROJECT-LEVEL .claude/settings.json wiring for AntiStallClaude.",
-  "//cowork": "User-level ~/.claude hooks do NOT fire in Cowork — keep this in the PROJECT .claude/. Merge these hooks blocks into your existing settings.json; do not clobber other entries.",
+  "//cowork": "On current builds, user-level ~/.claude hooks DO fire in Cowork (sessions launch with --setting-sources=user,project,local), so a global install (install.py --global) also works. This project-level wiring is still valid. Merge these hooks blocks into your existing settings.json; do not clobber other entries.",
+  "//v030": "Disarm is human-only (release passphrase); the agent cannot stop a sprint. See README.",
   "hooks": {
     "Stop": [
       {

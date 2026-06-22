@@ -1,88 +1,109 @@
 ---
 name: antistall
-description: Install and operate the AntiStallClaude gate — a project-level Stop hook that physically blocks the "announce-then-halt" / silent drift-stop failure where an agent ends a turn with unfinished, authorized work. Use when the user says "install the anti-stall gate", "stop me/the agent stalling", "make me keep going", "anti-stall", "enforce no drift-stop", or wants an autonomous build to not bail at convenient boundaries. Also use to ARM/DISARM a sprint or write a stop-ticket (done/blocked/question).
+description: Install and operate the AntiStallClaude gate — a Stop hook that physically blocks the "announce-then-halt" / silent drift-stop failure where an agent ends a turn with unfinished, authorized work. Use when the user says "install the anti-stall gate", "stop me/the agent stalling", "make me keep going", "anti-stall", "enforce no drift-stop", or wants an autonomous build to not bail at convenient boundaries. Also use to ARM a sprint, set the human release secret, or (human-only) RELEASE one. The agent CANNOT disarm — only a human passphrase can.
 ---
 
-# AntiStallClaude — anti-stall gate
+# AntiStallClaude — anti-stall gate (v0.3.0)
 
 A memory note or CLAUDE.md rule that says "don't stop early" is **advice the
 model rationalizes past**. This skill installs a **harness-enforced Stop hook**:
 a separate process the harness runs on every turn-end that the model cannot
-reason its way around. While a sprint is armed, ending a turn is **blocked**
-unless a fresh single-use stop-ticket declares a legitimate reason
-(`DONE` / `BLOCKED` / `QUESTION`). An anti-loop cap guarantees a real dead-end
-can always escape.
+reason around. While a sprint is armed, ending a turn is **blocked**.
+
+**Human-only disarm (the core guarantee):** the agent can ARM a sprint but can
+NEVER turn it off. There is no stop-ticket and no agent command that ends a
+sprint. Disarming requires a **human release passphrase** (stored only as a
+salted hash, never in the agent's context). This closes the hole where an agent
+wrote a "DONE" ticket to disarm itself and quit early.
 
 ## When invoked
 
-Figure out which the user wants:
-
 - **Install** ("install the anti-stall gate", "stop me stalling") → Step A.
-- **Arm / disarm / ticket** ("arm a sprint", "I'm done", "I'm blocked") → Step B.
-- **Verify** ("does the gate work", "test it") → Step C.
+- **Set the release secret** (human, first-time) → Step B.
+- **Arm a sprint** ("arm a sprint", "green-light autonomous work") → Step C.
+- **Release** (human only, "I'm satisfied, stop the sprint") → Step D.
+- **Verify** ("does the gate work", "test it") → Step E.
 
-## Cowork constraint (read first)
+## Scope: global or project
 
-User-level (`~/.claude/`) hooks **do not fire in Cowork's Code tab** — only
-**project-level** hooks do. Everything goes in the project's `.claude/`. If you
-put hooks in `~/.claude/`, they silently never run.
+On current Claude Code / Cowork builds the Code-tab session launches with
+`--setting-sources=user,project,local`, so **user-level `~/.claude` hooks DO
+fire** — a global install works and covers every project. (Older builds excluded
+the `user` source; that's no longer true.) Use `--global` for machine-wide, or a
+path for one project. The gate resolves `CLAUDE_PROJECT_DIR` at runtime, so one
+global gate still uses each project's own per-session sprint state.
 
 ## Step A — Install
 
-1. Confirm the target project directory (default: the current working dir / the
-   repo root the user is in).
-2. Copy the five hook scripts from this skill's `hooks/` into
-   `<project>/.claude/hooks/`:
-   `antistall-gate.py`, `antistall-gate.sh`, `antistall-session-start.py`,
-   `antistall-session-start.sh`, `antistall.py`. Make the `.sh` files executable.
-   (Or run the bundled installer: `python3 install.py <project>` — it copies the
-   hooks and merges the settings wiring for you.)
-3. Merge into `<project>/.claude/settings.json` (create it if absent; back it up
-   first; do NOT clobber existing entries):
-   ```json
-   {
-     "hooks": {
-       "Stop": [{ "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/antistall-gate.sh" }] }],
-       "SessionStart": [{ "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/antistall-session-start.sh" }] }]
-     }
-   }
-   ```
-4. Tell the user: **restart the Code tab / Claude Code** (hooks load at session
-   start), then run the behavioral test (Step C).
-5. Optionally add a one-line rule to the project `CLAUDE.md` so the agent knows
-   the protocol in-context (see README "The rule text").
-
-## Step B — Arm / disarm / ticket (the helper)
-
-Run from the project root:
+Run the bundled installer (copies the five hook scripts and merges the
+`Stop` + `SessionStart` wiring, idempotently, backing up settings.json):
 
 ```
-python3 .claude/hooks/antistall.py arm  "<the sprint goal>"   # arm: gate now blocks drift-stops
-python3 .claude/hooks/antistall.py done "<why finished>"      # whole queue done (also disarms)
-python3 .claude/hooks/antistall.py blocked  "<human-only decision needed>"   # stays armed
-python3 .claude/hooks/antistall.py question "<what you asked the human>"      # stays armed
-python3 .claude/hooks/antistall.py status                     # show armed state + pending ticket
+python3 install.py --global        # machine-wide (~/.claude)
+python3 install.py <project-dir>   # one project (defaults to cwd)
 ```
 
-**Arm when the user green-lights autonomous work.** A status summary is NEVER a
-stop — if work remains and nothing blocks you, keep working in the same turn.
-Stop only by writing a ticket with a real reason.
+Then tell the user to **restart the Code tab / Claude Code** (hooks load at
+session start). Optionally add the one-line rule to `CLAUDE.md` (README "The rule
+text") so the agent knows the protocol in-context.
 
-## Step C — Behavioral test (prove it fires)
+## Step B — Set the release secret (HUMAN, first-time, out of band)
 
-Hooks load at session start, so test in a session started AFTER install:
+`arm` refuses until a release secret exists. The human must set it **in their own
+terminal, not through the agent** (so the agent never sees it):
+
+```
+python3 .claude/hooks/antistall.py set-release-secret   # prompts (hidden) for a passphrase
+```
+
+The passphrase is stored only as a salted PBKDF2 hash in
+`~/.claude/antistall-release.hash`. Changing it later requires the current one.
+
+## Step C — Arm a sprint (agent or human)
+
+```
+python3 .claude/hooks/antistall.py arm "<the sprint goal>"   # gate now blocks drift-stops
+python3 .claude/hooks/antistall.py status                    # armed state + whether a secret is set
+python3 .claude/hooks/antistall.py request "<why you think you should stop>"  # notifies the human; does NOT disarm
+```
+
+**Arm when the user green-lights autonomous work.** Once armed, you (the agent)
+**cannot stop or disarm**. A status summary is NEVER a stop. If you hit a genuine
+human-only blocker, run `request "<why>"` to notify the operator, then KEEP
+WORKING on anything else still buildable. Do NOT declare the work "done" to
+escape — there is no such escape; finish it.
+
+Token-burn safety: after `ANTISTALL_BLOCK_CAP` consecutive blocks (default 25)
+the gate allows ONE stop but **does not disarm** (stays armed, notifies the
+human, re-enforces next turn). `ANTISTALL_BLOCK_CAP=0` holds until release.
+
+## Step D — Release (HUMAN ONLY — the only way to stop a sprint)
+
+```
+cd <project> && python3 .claude/hooks/antistall.py release         # this session's gate
+cd <project> && python3 .claude/hooks/antistall.py release --all   # every gate in the project
+```
+
+Prompts for the release passphrase; a wrong passphrase does nothing. The agent
+cannot perform this (it does not have the passphrase).
+
+## Step E — Behavioral test (prove it fires AND that the agent can't escape)
+
+In a session started AFTER install, with a release secret set:
 1. `python3 .claude/hooks/antistall.py arm "gate test"`
-2. Try to end the turn with a one-line reply and NO ticket → you must be
-   **blocked** with `[ANTI-STALL] … KEEP WORKING`. If you stop cleanly, the hook
-   is not firing (wrong scope, or the harness isn't running project Stop hooks).
-3. `python3 .claude/hooks/antistall.py done "test complete"` → you can now stop.
+2. Try to end the turn with no work done → you must be **blocked** with
+   `[ANTI-STALL] … KEEP WORKING`.
+3. Confirm the agent cannot escape: `... done "x"` is refused (removed); the gate
+   stays armed.
+4. Human: `python3 .claude/hooks/antistall.py release` (with the passphrase) →
+   only now does it stop.
 
-If Step 2 does not block, surface that loudly and check: hooks are PROJECT-level,
-`settings.json` is valid JSON, and `python3` resolves on PATH.
+If Step 2 does not block, surface that loudly: check hooks are wired (global or
+project `settings.json`), JSON is valid, and `python3` resolves on PATH.
 
 ## Removal
 
-Delete the `Stop`/`SessionStart` entries from `.claude/settings.json` and remove
-`.claude/hooks/antistall-*` + `.claude/hooks/antistall.py`. State files
-(`.claude/sprint-gate.json`, `sprint-stop-ticket.json`, `.antistall-block-count`)
-are harmless to delete.
+Delete the `Stop`/`SessionStart` entries from `settings.json` and remove
+`hooks/antistall-*` + `hooks/antistall.py`. State files (`sprint-gate-*.json`,
+`sprint-stop-request.json`, `.antistall-block-count-*`, and
+`~/.claude/antistall-release.hash`) are harmless to delete.
