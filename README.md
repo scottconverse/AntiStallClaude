@@ -1,3 +1,5 @@
+> **Archived October 17, 2026.** This hook now lives in [claude-hook-kit](https://github.com/scottconverse/claude-hook-kit) as `sprint-gate` (hooks/sprint-gate.mjs), with the same human-only disarm, the same PBKDF2 release secret file, and parity tests against the originals kept in that repo's `reference/` folder. The Codex port is tracked in [codex-hook-kit](https://github.com/scottconverse/codex-hook-kit) (`docs/HANDOFF-CODEX.md`). This repository is read-only; history, releases and issues are preserved.
+
 # AntiStallClaude
 
 **A harness-enforced gate that stops AI coding agents from quitting early.**
