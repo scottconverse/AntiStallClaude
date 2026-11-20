@@ -57,7 +57,7 @@
     <h1>Stop AI coding agents from <span class="em">quitting early</span>.</h1>
     <p class="sub">AntiStallClaude is a harness-enforced <code>Stop</code> hook that blocks the
       “announce-then-halt” drift — where an agent ends a turn with unfinished, authorized work.
-      Advice in a config file gets rationalized away. A hook can’t be.</p>
+      Advice in a config file gets rationalized away. A hook can’t be. Since 0.3.0 the agent can start a sprint, but only a person can end it.</p>
     <p class="sub" style="font-size:0.9em;opacity:0.85"><strong>On 0.1.0?</strong> Update to the current version, 0.3.2. Version 0.1.0 had a
       <code>Stop</code>-hook bug that could loop and burn tokens. Replace <code>antistall-gate.py</code> or re-run
       <code>install.py</code>.</p>
@@ -85,57 +85,67 @@
 
 <section><div class="wrap">
   <h2>How it works</h2>
-  <p>While a <strong>sprint is armed</strong>, ending a turn is <strong>blocked</strong> unless the agent
-    writes a fresh, single-use <strong>stop-ticket</strong> declaring a legitimate reason:</p>
-  <p style="margin:10px 0 18px">
-    <span class="pill done">DONE — whole queue finished</span>
-    <span class="pill blocked">BLOCKED — human-only decision</span>
-    <span class="pill question">QUESTION — needs an answer</span>
-  </p>
+  <p>While a <strong>sprint is armed</strong>, ending a turn is <strong>blocked</strong>. The agent can arm
+    a sprint. It <strong>cannot</strong> turn one off. Only a person with the release passphrase can.</p>
   <div class="flow">agent finishes a turn ─▶ harness runs antistall-gate
         │
-   sprint armed? ──── no ──▶ allow (silent)
+   sprint armed for this session? ── no ──▶ allow (silent)
         │ yes
-   stop_hook_active? ── yes ──▶ allow (loop guard — never block a continuation a block caused)
-        │ no
-   fresh (&lt; max-age) DONE/BLOCKED/QUESTION ticket? ── yes ──▶ consume, allow   [any ticket file is single-use: consumed on read, fresh or stale]
-        │ no
-   per-session block count ≥ cap, or counter anomaly? ── yes ──▶ allow (fail-open escape)
+   consecutive blocks ≥ cap (default 25)? ── yes ──▶ pause this one stop, stay armed, notify the human
         │ no
         ▼
-   { "decision": "block", "reason": "KEEP WORKING …" } ─▶ agent continues</div>
-  <p style="margin-top:16px"><strong>The gate can never loop or trap a session.</strong> It honors
-    <code>stop_hook_active</code> — always allowing a stop that a prior block caused, so it nudges a drift-stop
-    at most once per continuation chain. A <strong>per-session</strong>, fail-open anti-loop cap (default 6) is a
-    second, independent guard: the counter is keyed on the session id so two agents never share it, and any
-    missing/empty/corrupt/unreadable/unwritable counter allows the stop rather than blocking again. When no sprint is armed, the
-    gate is <strong>silent</strong> — normal chat is never gated.</p>
+   { "decision": "block", "reason": "KEEP WORKING …" } ─▶ agent continues
+
+human runs "release" and types the passphrase ─▶ sprint ends   (the only disarm)</div>
+  <div class="grid" style="margin-top:18px">
+    <div class="card"><h3>Human-only disarm</h3><p>Versions before 0.3.0 let the agent write a
+      <code>DONE</code> ticket and switch the gate off. That exit is removed. <code>release</code> needs a
+      passphrase that is stored only as a salted PBKDF2-SHA256 hash. <code>arm</code> refuses to run until a
+      passphrase is set.</p></div>
+    <div class="card"><h3>A password box, not a terminal</h3><p>Tell the agent “disarm” and it runs
+      <code>release</code>, which opens a masked password box on your screen (Windows). The agent can open the
+      box. It cannot fill it.</p></div>
+    <div class="card"><h3>One session, one gate</h3><p>Sprint state is scoped to the session that armed it
+      (0.2.1 and later). Two sessions in the same folder do not gate each other.</p></div>
+    <div class="card"><h3>A pause, never a silent exit</h3><p>After 25 blocked stops in a row the gate lets one
+      stop through so a stuck agent cannot burn tokens forever. The sprint stays armed, you get a desktop
+      notification, and the gate enforces again on the next turn.</p></div>
+  </div>
+  <p style="margin-top:16px">When no sprint is armed, the gate is <strong>silent</strong>. Normal chat is never
+    gated.</p>
 </div></section>
 
 <section><div class="wrap">
   <h2>Install</h2>
   <pre>git clone https://github.com/scottconverse/AntiStallClaude.git
-python3 AntiStallClaude/install.py /path/to/your/project   # defaults to the current dir
-# then RESTART the Code tab — hooks load at session start</pre>
-  <p><strong>Cowork note:</strong> user-level <code>~/.claude</code> hooks don’t fire in Cowork — the installer
-    puts everything in the <strong>project</strong> <code>.claude/</code>, which does.</p>
+python3 AntiStallClaude/install.py /path/to/your/project   # one project; defaults to the current dir
+python3 AntiStallClaude/install.py --global                # user level (~/.claude), every project
+# then RESTART the Code tab. Hooks load at session start</pre>
+  <p><strong>Cowork note:</strong> on current builds, user-level <code>~/.claude</code> hooks do fire in
+    Cowork’s Code tab (verified on claude-code 2.1.181), so the global install works. Each project still keeps
+    its own sprint state.</p>
 </div></section>
 
 <section><div class="wrap">
   <h2>Use it</h2>
-  <pre>python3 .claude/hooks/antistall.py arm      "build the export pipeline"
-python3 .claude/hooks/antistall.py done     "shipped + tests green"   # disarms
-python3 .claude/hooks/antistall.py blocked  "need prod DB creds"      # stays armed
-python3 .claude/hooks/antistall.py question "which storage backend?"
+  <pre>python3 .claude/hooks/antistall.py set-release-secret                 # you, once: sets the passphrase
+python3 .claude/hooks/antistall.py arm     "build the export pipeline" # agent or human
+python3 .claude/hooks/antistall.py request "need prod DB creds"        # agent: notifies you, stays armed
+python3 .claude/hooks/antistall.py release                             # you: passphrase ends the sprint
 python3 .claude/hooks/antistall.py status</pre>
+  <p>The <code>done</code>, <code>blocked</code> and <code>question</code> commands from 0.1 and 0.2 are gone.
+    Use <code>release --all</code> to end every sprint in the project.</p>
 </div></section>
 
 <section><div class="wrap">
   <h2 class="lim">Honest about limits</h2>
-  <p class="lim">It is <strong>not</strong> unspoofable — an agent could write a false <code>DONE</code> ticket.
-    But that converts a silent drift into an explicit, logged, auditable claim, and default-deny removes the
-    lazy path. It enforces <strong>don’t stop early</strong>, not <strong>do good work</strong> — pair it with
-    tests and CI.</p>
+  <p class="lim">It removes every sanctioned way for the agent to quit a sprint. It is <strong>not</strong> a
+    sandbox: an agent with full file access on the same machine could still delete the gate or passphrase
+    files. That is open tampering, not a normal exit. It enforces <strong>don’t stop early</strong>, not
+    <strong>do good work</strong>, so pair it with tests and CI.</p>
+  <p class="lim"><strong>Archived October 17, 2026.</strong> This hook now lives in
+    <a href="https://github.com/scottconverse/claude-hook-kit">claude-hook-kit</a> as
+    <code>sprint-gate</code>, with the same human-only disarm. This repository is read-only.</p>
 </div></section>
 
 <footer><div class="wrap">
